@@ -1,0 +1,53 @@
+{
+  "name": "javascript-ui-demo",
+  "version": "1.0.0",
+  "description": "Interactive JavaScript UI demo with OTA API integration and Node.js server",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx http-server -p 3000 -o",
+    "dev": "npx live-server --port=3000 --open=index.html",
+    "server": "node server.js",
+    "server:dev": "nodemon server.js",
+    "install-deps": "npm install express axios cors nodemon",
+    "build": "echo 'Static site - no build required'",
+    "test": "echo 'No tests configured yet'",
+    "lint": "npx eslint script.js server.js",
+    "format": "npx prettier --write *.html *.css *.js"
+  },
+  "keywords": [
+    "javascript",
+    "ui",
+    "demo",
+    "interactive",
+    "frontend",
+    "vanilla-js",
+    "responsive",
+    "web-components",
+    "ota-api",
+    "nodejs",
+    "express",
+    "axios"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "eslint": "^8.0.0",
+    "prettier": "^2.0.0",
+    "http-server": "^14.0.0",
+    "live-server": "^1.2.0",
+    "nodemon": "^3.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/javascript-ui-demo.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/javascript-ui-demo/issues"
+  },
+  "homepage": "https://github.com/yourusername/javascript-ui-demo#readme"
+}
