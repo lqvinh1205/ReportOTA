@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,6 +8,7 @@
     <link rel="stylesheet" href="styles.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
+
 <body>
     <div class="container">
         <header class="header">
@@ -24,8 +26,16 @@
                         <p><strong>Endpoint:</strong> <code>https://id.bluejaypms.com/app/Reservation</code></p>
                         <p><strong>Status:</strong> <span id="apiStatus" class="status-pending">Ready to test</span></p>
                     </div>
-                    
+
                     <div class="api-controls">
+                        <div class="form-group" style="margin-bottom: 15px;">
+                            <label for="facilitySelect">Chọn cơ sở:</label>
+                            <select id="facilitySelect"
+                                style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                                <option value="">Đang tải danh sách cơ sở...</option>
+                            </select>
+                        </div>
+
                         <button class="api-btn server" onclick="fetchReportViaServer()">
                             🖥️ Fetch via Node.js Server
                         </button>
@@ -58,7 +68,8 @@
                         <p class="card-description">Modern JavaScript with ES6+ features</p>
                         <button class="card-button" onclick="toggleCard(1)">Learn More</button>
                         <div class="card-details">
-                            <p>Explore the latest JavaScript features including arrow functions, destructuring, modules, and async/await.</p>
+                            <p>Explore the latest JavaScript features including arrow functions, destructuring, modules,
+                                and async/await.</p>
                         </div>
                     </div>
 
@@ -70,7 +81,8 @@
                         <p class="card-description">Responsive UI Design</p>
                         <button class="card-button" onclick="toggleCard(2)">Learn More</button>
                         <div class="card-details">
-                            <p>Beautiful, responsive designs that work across all devices with modern CSS Grid and Flexbox.</p>
+                            <p>Beautiful, responsive designs that work across all devices with modern CSS Grid and
+                                Flexbox.</p>
                         </div>
                     </div>
 
@@ -82,7 +94,8 @@
                         <p class="card-description">Performance Optimized</p>
                         <button class="card-button" onclick="toggleCard(3)">Learn More</button>
                         <div class="card-details">
-                            <p>Optimized for speed with lazy loading, efficient DOM manipulation, and minimal bundle size.</p>
+                            <p>Optimized for speed with lazy loading, efficient DOM manipulation, and minimal bundle
+                                size.</p>
                         </div>
                     </div>
                 </div>
@@ -170,4 +183,5 @@
 
     <script src="script.js"></script>
 </body>
+
 </html>

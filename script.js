@@ -1,130 +1,177 @@
 // ===== CORE BOOKING DATA FETCHING LOGIC =====
 // Node.js server endpoints
-const SERVER_BASE_URL = 'http://localhost:3001';
+const SERVER_BASE_URL = "http://localhost:3001";
 
 // ===== MAIN FETCH FUNCTIONS =====
 
 // Fetch single page via Node.js server
 async function fetchReportViaServer() {
-    updateApiStatus('pending', 'Calling Node.js server...');
-    
-    try {
-        console.log('🚀 Calling Node.js server for login and fetch...');
-        
-        const response = await fetch(`${SERVER_BASE_URL}/api/login-and-fetch`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            }
-        });
+  const facilityId = document.getElementById("facilitySelect").value;
 
-        if (!response.ok) {
-            throw new Error(`Server error: ${response.status}`);
-        }
+  if (!facilityId) {
+    updateApiStatus("error", "Vui lòng chọn cơ sở trước khi fetch dữ liệu");
+    return;
+  }
 
-        const result = await response.json();
-        
-        if (result.success) {
-            console.log('✅ Server response successful');
-            console.log('Login result:', result.login);
-            console.log('Report result:', result.report);
-            
-            if (result.report && result.report.bookings) {
-                displayBookingData(result.report);
-                updateApiStatus('success', `Server fetch successful - ${result.report.bookingsOnPage} bookings found`);
-                showNotification('Report fetched via Node.js server!', 'success');
-            } else if (result.report && result.report.htmlData) {
-                displayReportData(result.report.htmlData);
-                updateApiStatus('success', `Server fetch successful (${result.report.dataLength} chars)`);
-                showNotification('Report fetched via Node.js server!', 'success');
-            } else {
-                throw new Error('No report data received from server');
-            }
-        } else {
-            throw new Error(result.error || 'Server operation failed');
-        }
-        
-    } catch (error) {
-        console.error('❌ Server fetch error:', error);
-        updateApiStatus('error', `Server error: ${error.message}`);
-        showNotification(`Server Error: ${error.message}`, 'error');
+  updateApiStatus("pending", "Calling Node.js server...");
+
+  try {
+    console.log("🚀 Calling Node.js server for login and fetch...");
+
+    const response = await fetch(
+      `${SERVER_BASE_URL}/api/login-and-fetch-facility`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          facilityId: facilityId,
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Server error: ${response.status}`);
     }
+
+    const result = await response.json();
+
+    if (result.success) {
+      console.log("✅ Server response successful");
+      console.log("Full result:", result);
+
+      // Handle facility-based response structure
+      if (result.bookings && result.bookings.length > 0) {
+        // Create report data structure compatible with displayBookingData
+        const reportData = {
+          success: true,
+          totalBookings: result.totalBookings,
+          bookings: result.bookings,
+          timestamp: result.timestamp,
+          fetchSummary: result.summary,
+          facility: result.facility,
+        };
+
+        displayBookingData(reportData);
+        updateApiStatus(
+          "success",
+          `✅ Thành công! Lấy được ${result.totalBookings} booking từ ${result.facility.name}`
+        );
+        showNotification(
+          `Lấy được ${result.totalBookings} booking từ ${result.facility.name}!`,
+          "success"
+        );
+      } else if (result.report && result.report.bookings) {
+        // Handle old structure (if still exists)
+        displayBookingData(result.report);
+        updateApiStatus(
+          "success",
+          `Server fetch successful - ${result.report.totalBookings} bookings found`
+        );
+        showNotification("Report fetched via Node.js server!", "success");
+      } else if (result.report && result.report.htmlData) {
+        displayReportData(result.report.htmlData);
+        updateApiStatus(
+          "success",
+          `Server fetch successful (${result.report.dataLength} chars)`
+        );
+        showNotification("Report fetched via Node.js server!", "success");
+      } else {
+        // More specific error message
+        console.error("Unexpected response structure:", result);
+        throw new Error(
+          `No booking data found. Response structure: ${Object.keys(
+            result
+          ).join(", ")}`
+        );
+      }
+    } else {
+      throw new Error(result.error || "Server operation failed");
+    }
+  } catch (error) {
+    console.error("❌ Server fetch error:", error);
+    updateApiStatus("error", `Server error: ${error.message}`);
+    showNotification(`Server Error: ${error.message}`, "error");
+  }
 }
 
 // Check server health
 async function checkServerHealth() {
-    try {
-        const response = await fetch(`${SERVER_BASE_URL}/api/health`);
-        const health = await response.json();
-        
-        console.log('🏥 Server health:', health);
-        updateApiStatus('success', `Server OK - ${health.sessionCookies}`);
-        showNotification('Server is running!', 'success');
-        
-        return true;
-    } catch (error) {
-        console.error('❌ Server health check failed:', error);
-        updateApiStatus('error', 'Server not running');
-        showNotification('Node.js server not running! Please start it first.', 'error');
-        
-        return false;
-    }
+  try {
+    const response = await fetch(`${SERVER_BASE_URL}/api/health`);
+    const health = await response.json();
+
+    console.log("🏥 Server health:", health);
+    updateApiStatus("success", `Server OK - ${health.sessionCookies}`);
+    showNotification("Server is running!", "success");
+
+    return true;
+  } catch (error) {
+    console.error("❌ Server health check failed:", error);
+    updateApiStatus("error", "Server not running");
+    showNotification(
+      "Node.js server not running! Please start it first.",
+      "error"
+    );
+
+    return false;
+  }
 }
 
 // Login via server only
 async function loginViaServer() {
-    updateApiStatus('pending', 'Logging in via server...');
-    
-    try {
-        const response = await fetch(`${SERVER_BASE_URL}/api/login`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            }
-        });
+  updateApiStatus("pending", "Logging in via server...");
 
-        const result = await response.json();
-        
-        if (result.success) {
-            console.log('✅ Server login successful');
-            updateApiStatus('success', 'Login successful via server');
-            showNotification('Login successful!', 'success');
-        } else {
-            throw new Error(result.error);
-        }
-        
-    } catch (error) {
-        console.error('❌ Server login error:', error);
-        updateApiStatus('error', `Login error: ${error.message}`);
-        showNotification(`Login Error: ${error.message}`, 'error');
+  try {
+    const response = await fetch(`${SERVER_BASE_URL}/api/login`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    const result = await response.json();
+
+    if (result.success) {
+      console.log("✅ Server login successful");
+      updateApiStatus("success", "Login successful via server");
+      showNotification("Login successful!", "success");
+    } else {
+      throw new Error(result.error);
     }
+  } catch (error) {
+    console.error("❌ Server login error:", error);
+    updateApiStatus("error", `Login error: ${error.message}`);
+    showNotification(`Login Error: ${error.message}`, "error");
+  }
 }
 
 // ===== BOOKING DATA DISPLAY FUNCTIONS =====
 
 // Display booking data in a professional format
 function displayBookingData(reportData) {
-    // Store booking data globally for report generation
-    window.lastBookingData = reportData;
-    
-    // Remove existing booking report if exists
-    const existingReport = document.getElementById('booking-report-section');
-    if (existingReport) {
-        existingReport.remove();
-    }
-    
-    if (!reportData || !reportData.bookings) {
-        return;
-    }
-    
-    const bookings = reportData.bookings;
-    
-    // Create booking report section
-    const bookingSection = document.createElement('section');
-    bookingSection.id = 'booking-report-section';
-    bookingSection.className = 'booking-report-section';
-    
-    bookingSection.innerHTML = `
+  // Store booking data globally for report generation
+  window.lastBookingData = reportData;
+
+  // Remove existing booking report if exists
+  const existingReport = document.getElementById("booking-report-section");
+  if (existingReport) {
+    existingReport.remove();
+  }
+
+  if (!reportData || !reportData.bookings) {
+    return;
+  }
+
+  const bookings = reportData.bookings;
+
+  // Create booking report section
+  const bookingSection = document.createElement("section");
+  bookingSection.id = "booking-report-section";
+  bookingSection.className = "booking-report-section";
+
+  bookingSection.innerHTML = `
         <div class="container">
             <!-- Booking Summary Section -->
             <div class="booking-summary-card">
@@ -133,7 +180,9 @@ function displayBookingData(reportData) {
                         📊 Booking Summary Report
                     </h2>
                     <div class="summary-timestamp">
-                        Generated: ${new Date(reportData.timestamp || Date.now()).toLocaleString('vi-VN')}
+                        Generated: ${new Date(
+                          reportData.timestamp || Date.now()
+                        ).toLocaleString("vi-VN")}
                     </div>
                 </div>
                 
@@ -141,7 +190,9 @@ function displayBookingData(reportData) {
                     <div class="summary-card primary">
                         <div class="card-icon">🏨</div>
                         <div class="card-content">
-                            <div class="card-number">${reportData.totalBookings || bookings.length}</div>
+                            <div class="card-number">${
+                              reportData.totalBookings || bookings.length
+                            }</div>
                             <div class="card-label">Total Bookings</div>
                         </div>
                     </div>
@@ -149,7 +200,11 @@ function displayBookingData(reportData) {
                     <div class="summary-card success">
                         <div class="card-icon">📄</div>
                         <div class="card-content">
-                            <div class="card-number">${reportData.fetchSummary?.totalPagesProcessed || reportData.pagesProcessed || 1}</div>
+                            <div class="card-number">${
+                              reportData.fetchSummary?.totalPagesProcessed ||
+                              reportData.pagesProcessed ||
+                              1
+                            }</div>
                             <div class="card-label">Pages Processed</div>
                         </div>
                     </div>
@@ -157,7 +212,9 @@ function displayBookingData(reportData) {
                     <div class="summary-card info">
                         <div class="card-icon">📑</div>
                         <div class="card-content">
-                            <div class="card-number">${reportData.fetchSummary?.searchTypes?.length || 1}</div>
+                            <div class="card-number">${
+                              reportData.fetchSummary?.searchTypes?.length || 1
+                            }</div>
                             <div class="card-label">Search Types</div>
                         </div>
                     </div>
@@ -165,7 +222,9 @@ function displayBookingData(reportData) {
                     <div class="summary-card warning">
                         <div class="card-icon">💰</div>
                         <div class="card-content">
-                            <div class="card-number">${calculateTotalRevenue(bookings)}</div>
+                            <div class="card-number">${calculateTotalRevenue(
+                              bookings
+                            )}</div>
                             <div class="card-label">Total Revenue</div>
                         </div>
                     </div>
@@ -174,8 +233,17 @@ function displayBookingData(reportData) {
                 <div class="summary-breakdown">
                     <div class="breakdown-item">
                         <span class="breakdown-label">Processing Status:</span>
-                        <span class="breakdown-value ${reportData.pagesProcessed === reportData.totalPages ? 'complete' : 'partial'}">
-                            ${reportData.pagesProcessed === reportData.totalPages ? '✅ Complete' : '⏳ Partial'}
+                        <span class="breakdown-value ${
+                          reportData.pagesProcessed === reportData.totalPages
+                            ? "complete"
+                            : "partial"
+                        }">
+                            ${
+                              reportData.pagesProcessed ===
+                              reportData.totalPages
+                                ? "✅ Complete"
+                                : "⏳ Partial"
+                            }
                         </span>
                     </div>
                     <div class="breakdown-item">
@@ -218,22 +286,57 @@ function displayBookingData(reportData) {
                             </tr>
                         </thead>
                         <tbody>
-                            ${bookings.map((booking, index) => `
+                            ${bookings
+                              .map(
+                                (booking, index) => `
                                 <tr class="booking-row">
                                     <td class="row-number">${index + 1}</td>
-                                    <td class="booking-code">${booking.bookingCode || ''}</td>
-                                    <td class="ota-ref">${booking.otaReference || 'N/A'}</td>
-                                    <td class="guest-name">${booking.guestName || ''}</td>
-                                    <td class="room-info">${booking.room || 'Unassigned'}</td>
-                                    <td class="source-info">${booking.source || ''}</td>
-                                    <td><span class="type-badge ${getTypeClass(booking.searchType)}">${booking.searchType || 'N/A'}</span></td>
-                                    <td><span class="status-badge ${getStatusClass(booking.status)}">${booking.status || ''}</span></td>
-                                    <td class="date-info">${booking.checkinDate || ''}</td>
-                                    <td class="date-info">${booking.checkoutDate || ''}</td>
-                                    <td class="amount">${booking.totalAmount}</td>
-                                    <td class="amount ${parseFloat(booking.balance?.replace(/[^\d.-]/g, '') || 0) > 0 ? 'has-balance' : ''}">${booking.balance}</td>
+                                    <td class="booking-code">${
+                                      booking.bookingCode || ""
+                                    }</td>
+                                    <td class="ota-ref">${
+                                      booking.otaReference || "N/A"
+                                    }</td>
+                                    <td class="guest-name">${
+                                      booking.guestName || ""
+                                    }</td>
+                                    <td class="room-info">${
+                                      booking.room || "Unassigned"
+                                    }</td>
+                                    <td class="source-info">${
+                                      booking.source || ""
+                                    }</td>
+                                    <td><span class="type-badge ${getTypeClass(
+                                      booking.searchType
+                                    )}">${
+                                  booking.searchType || "N/A"
+                                }</span></td>
+                                    <td><span class="status-badge ${getStatusClass(
+                                      booking.status
+                                    )}">${booking.status || ""}</span></td>
+                                    <td class="date-info">${
+                                      booking.checkinDate || ""
+                                    }</td>
+                                    <td class="date-info">${
+                                      booking.checkoutDate || ""
+                                    }</td>
+                                    <td class="amount">${
+                                      booking.totalAmount
+                                    }</td>
+                                    <td class="amount ${
+                                      parseFloat(
+                                        booking.balance?.replace(
+                                          /[^\d.-]/g,
+                                          ""
+                                        ) || 0
+                                      ) > 0
+                                        ? "has-balance"
+                                        : ""
+                                    }">${booking.balance}</td>
                                 </tr>
-                            `).join('')}
+                            `
+                              )
+                              .join("")}
                         </tbody>
                     </table>
                 </div>
@@ -242,74 +345,78 @@ function displayBookingData(reportData) {
         
         ${getBookingStyles()}
     `;
-    
-    // Insert after first section (API testing section)
-    const firstSection = document.querySelector('.demo-section');
-    if (firstSection && firstSection.parentNode) {
-        firstSection.parentNode.insertBefore(bookingSection, firstSection.nextSibling);
+
+  // Insert after first section (API testing section)
+  const firstSection = document.querySelector(".demo-section");
+  if (firstSection && firstSection.parentNode) {
+    firstSection.parentNode.insertBefore(
+      bookingSection,
+      firstSection.nextSibling
+    );
+  } else {
+    // Fallback: append to main container
+    const mainContainer = document.querySelector(".container");
+    if (mainContainer) {
+      mainContainer.appendChild(bookingSection);
     } else {
-        // Fallback: append to main container
-        const mainContainer = document.querySelector('.container');
-        if (mainContainer) {
-            mainContainer.appendChild(bookingSection);
-        } else {
-            document.body.appendChild(bookingSection);
-        }
+      document.body.appendChild(bookingSection);
     }
+  }
 }
 
 // ===== HELPER FUNCTIONS =====
 
 // Calculate total revenue
 function calculateTotalRevenue(bookings) {
-    if (!bookings || bookings.length === 0) return '0 VND';
-    
-    const total = bookings.reduce((sum, booking) => {
-        const amount = parseFloat(booking.totalAmount?.replace(/[^\d.-]/g, '') || 0);
-        return sum + amount;
-    }, 0);
+  if (!bookings || bookings.length === 0) return "0 VND";
 
-    return total.toString();
+  const total = bookings.reduce((sum, booking) => {
+    const amount = parseFloat(
+      booking.totalAmount?.replace(/[^\d.-]/g, "") || 0
+    );
+    return sum + amount;
+  }, 0);
+
+  return total.toString();
 }
-
 
 // Get status class for badges
 function getStatusClass(status) {
-    if (!status) return '';
-    const statusLower = status.toLowerCase();
-    if (statusLower.includes('xác nhận')) return 'confirmed';
-    if (statusLower.includes('giữ phòng')) return 'holding';
-    if (statusLower.includes('nhận phòng')) return 'checked-in';
-    if (statusLower.includes('trả phòng')) return 'checked-out';
-    return 'default';
+  if (!status) return "";
+  const statusLower = status.toLowerCase();
+  if (statusLower.includes("xác nhận")) return "confirmed";
+  if (statusLower.includes("giữ phòng")) return "holding";
+  if (statusLower.includes("nhận phòng")) return "checked-in";
+  if (statusLower.includes("trả phòng")) return "checked-out";
+  return "default";
 }
 
 // Get type class for TypeSeachDate badges
 function getTypeClass(searchType) {
-    if (!searchType) return 'default';
-    const typeLower = searchType.toLowerCase();
-    if (typeLower.includes('đến')) return 'arriving';
-    if (typeLower.includes('đi')) return 'departing';
-    if (typeLower.includes('lưu')) return 'staying';
-    return 'default';
+  if (!searchType) return "default";
+  const typeLower = searchType.toLowerCase();
+  if (typeLower.includes("đến")) return "arriving";
+  if (typeLower.includes("đi")) return "departing";
+  if (typeLower.includes("lưu")) return "staying";
+  return "default";
 }
 
 // ===== UTILITY FUNCTIONS =====
 
 // Update API status
 function updateApiStatus(status, message) {
-    const statusElement = document.getElementById('apiStatus');
-    if (statusElement) {
-        statusElement.className = `status-${status}`;
-        statusElement.textContent = message;
-    }
+  const statusElement = document.getElementById("apiStatus");
+  if (statusElement) {
+    statusElement.className = `status-${status}`;
+    statusElement.textContent = message;
+  }
 }
 
 // Show notification
-function showNotification(message, type = 'info') {
-    const notification = document.createElement('div');
-    notification.className = `notification notification-${type}`;
-    notification.style.cssText = `
+function showNotification(message, type = "info") {
+  const notification = document.createElement("div");
+  notification.className = `notification notification-${type}`;
+  notification.style.cssText = `
         position: fixed;
         top: 20px;
         right: 20px;
@@ -323,168 +430,188 @@ function showNotification(message, type = 'info') {
         transform: translateX(400px);
         transition: transform 0.3s ease;
     `;
-    notification.textContent = message;
-    
-    document.body.appendChild(notification);
-    
+  notification.textContent = message;
+
+  document.body.appendChild(notification);
+
+  setTimeout(() => {
+    notification.style.transform = "translateX(0)";
+  }, 100);
+
+  setTimeout(() => {
+    notification.style.transform = "translateX(400px)";
     setTimeout(() => {
-        notification.style.transform = 'translateX(0)';
-    }, 100);
-    
-    setTimeout(() => {
-        notification.style.transform = 'translateX(400px)';
-        setTimeout(() => {
-            if (document.body.contains(notification)) {
-                document.body.removeChild(notification);
-            }
-        }, 300);
-    }, 3000);
+      if (document.body.contains(notification)) {
+        document.body.removeChild(notification);
+      }
+    }, 300);
+  }, 3000);
 }
 
 function getNotificationColor(type) {
-    const colors = {
-        success: '#10b981',
-        warning: '#f59e0b',
-        error: '#ef4444',
-        info: '#3b82f6'
-    };
-    return colors[type] || colors.info;
+  const colors = {
+    success: "#10b981",
+    warning: "#f59e0b",
+    error: "#ef4444",
+    info: "#3b82f6",
+  };
+  return colors[type] || colors.info;
 }
 
 // ===== EXPORT FUNCTIONS =====
 
 // Export bookings to CSV (placeholder)
 function exportBookings() {
-    alert('📊 Export feature coming soon!');
+  alert("📊 Export feature coming soon!");
 }
 
 // Get detailed room report
 function getReport() {
-    const bookings = getCurrentBookingsData();
-    if (!bookings || bookings.length === 0) {
-        showNotification('Không có dữ liệu booking để tạo báo cáo!', 'warning');
-        return;
-    }
-    
-    // Generate report text
-    const reportText = generateReportText(bookings);
-    
-    // Show simple text popup
-    showSimpleReportPopup(reportText);
+  const bookings = getCurrentBookingsData();
+  if (!bookings || bookings.length === 0) {
+    showNotification("Không có dữ liệu booking để tạo báo cáo!", "warning");
+    return;
+  }
+
+  // Generate report text
+  const reportText = generateReportText(bookings);
+
+  // Show simple text popup
+  showSimpleReportPopup(reportText);
 }
 
 // Get current bookings data from the displayed table
 function getCurrentBookingsData() {
-    const reportSection = document.getElementById('booking-report-section');
-    if (!reportSection) return null;
-    
-    // Try to get data from the last fetch
-    if (window.lastBookingData && window.lastBookingData.bookings) {
-        return window.lastBookingData.bookings;
-    }
-    
-    return null;
+  const reportSection = document.getElementById("booking-report-section");
+  if (!reportSection) return null;
+
+  // Try to get data from the last fetch
+  if (window.lastBookingData && window.lastBookingData.bookings) {
+    return window.lastBookingData.bookings;
+  }
+
+  return null;
 }
 
 // Generate simple text report using TypeSeachDate-based categorization
 function generateReportText(bookings) {
-    const currentDate = new Date().toLocaleDateString('vi-VN');
-    const facilityName = "Era Apartment - 58 Nguyễn Khánh Toàn";
-    
-    // Categorize rooms by TypeSeachDate
-    const departed = [];   // TypeSeachDate = 1 (Phòng đi)
-    const staying = [];    // TypeSeachDate = 3 (Phòng lưu)  
-    const arriving = [];   // TypeSeachDate = 0 (Phòng đến)
-    const vacant = [];     // Phòng trống (các phòng còn lại)
-    
-    // Get all occupied room numbers
-    const occupiedRooms = new Set();
-    
-    bookings.forEach(booking => {
-        const roomNumber = booking.room || 'Unassigned';
-        const typeSeachDate = booking.typeSeachDate;
-        
-        // Categorize based on TypeSeachDate from server data
-        if (typeSeachDate === 1) {
-            // Phòng đi (departed)
-            departed.push(roomNumber);
-            occupiedRooms.add(roomNumber);
-        } else if (typeSeachDate === 3) {
-            // Phòng lưu (staying)
-            staying.push(roomNumber);
-            occupiedRooms.add(roomNumber);
-        } else if (typeSeachDate === 0) {
-            // Phòng đến (arriving) - with full details
-            const roomInfo = `${roomNumber}, ${booking.guestName || ''}, ${booking.checkinDate || ''}-${booking.checkoutDate || ''}, ${booking.source || ''}: ${formatCurrency(booking.totalAmount || '0')}`;
-            arriving.push(roomInfo);
-            occupiedRooms.add(roomNumber);
-        }
+  const currentDate = new Date().toLocaleDateString("vi-VN");
+  const facilityName = "Era Apartment - 58 Nguyễn Khánh Toàn";
+
+  // Categorize rooms by TypeSeachDate
+  const departed = []; // TypeSeachDate = 1 (Phòng đi)
+  const staying = []; // TypeSeachDate = 3 (Phòng lưu)
+  const arriving = []; // TypeSeachDate = 0 (Phòng đến)
+  const vacant = []; // Phòng trống (các phòng còn lại)
+
+  // Get all occupied room numbers
+  const occupiedRooms = new Set();
+
+  bookings.forEach((booking) => {
+    const roomNumber = convertBookingRoomName(booking.room) || "Unassigned";
+    const typeSeachDate = booking.typeSeachDate;
+
+    // Categorize based on TypeSeachDate from server data
+    if (typeSeachDate === 1) {
+      // Phòng đi (departed)
+      departed.push(roomNumber);
+      occupiedRooms.add(roomNumber);
+    } else if (typeSeachDate === 3) {
+      // Phòng lưu (staying)
+      staying.push(roomNumber);
+      occupiedRooms.add(roomNumber);
+    } else if (typeSeachDate === 0) {
+      // Phòng đến (arriving) - with full details
+      const roomInfo = `P${roomNumber} - ${booking.guestName || ""} - checkin ${
+        booking.checkinDate || ""
+      } checkout ${booking.checkoutDate || ""} - ${booking.source || ""}: ${
+        booking.totalAmount || "0"
+      }`;
+      arriving.push(roomInfo);
+      occupiedRooms.add(roomNumber);
+    }
+  });
+
+  // Generate vacant rooms (assuming rooms 1N1K-201 to 1N1K-620)
+  //   const allRoomNumbers = [];
+  //   for (let floor = 2; floor <= 6; floor++) {
+  //     for (let room = 1; room <= 20; room++) {
+  //       if (room <= 4 || (room >= 10 && room <= 15)) {
+  //         // Typical hotel room numbering
+  //         allRoomNumbers.push(
+  //           `1N1K - ${floor}0${room.toString().padStart(1, "0")}`
+  //         );
+  //       }
+  //     }
+  //   }
+
+  //   // Find vacant rooms (not in any category)
+  //   allRoomNumbers.forEach((roomNum) => {
+  //     if (!occupiedRooms.has(roomNum)) {
+  //       vacant.push(roomNum);
+  //     }
+  //   });
+
+  // Build report text
+  let reportText = `${facilityName}\nBáo cáo ngày: ${currentDate}\n\n`;
+
+  reportText += `TỔNG QUAN:\n`;
+
+  if (departed.length > 0) {
+    reportText += `- Phòng đi: ${departed.join(", ")}\n`;
+  } else {
+    reportText += `- Phòng đi: Không có\n`;
+  }
+
+  if (staying.length > 0) {
+    reportText += `- Phòng lưu: ${staying.join(", ")}\n`;
+  } else {
+    reportText += `- Phòng lưu: Không có\n`;
+  }
+
+  if (vacant.length > 0) {
+    reportText += `- Phòng trống: ${vacant.slice(0, 10).join(", ")}${
+      vacant.length > 10 ? ",..." : ""
+    }\n`;
+  } else {
+    reportText += `- Phòng trống: Không có\n`;
+  }
+
+  if (arriving.length > 0) {
+    reportText += `- Phòng đến:\n`;
+    arriving.forEach((room, index) => {
+      reportText += `${room}\n`;
     });
-    
-    // Generate vacant rooms (assuming rooms 1N1K-201 to 1N1K-620)
-    const allRoomNumbers = [];
-    for (let floor = 2; floor <= 6; floor++) {
-        for (let room = 1; room <= 20; room++) {
-            if (room <= 4 || (room >= 10 && room <= 15)) { // Typical hotel room numbering
-                allRoomNumbers.push(`1N1K - ${floor}0${room.toString().padStart(1, '0')}`);
-            }
-        }
-    }
-    
-    // Find vacant rooms (not in any category)
-    allRoomNumbers.forEach(roomNum => {
-        if (!occupiedRooms.has(roomNum)) {
-            vacant.push(roomNum);
-        }
-    });
-    
-    // Build report text
-    let reportText = `${facilityName}\nBáo cáo ngày: ${currentDate}\n\n`;
-    
-    reportText += `TỔNG QUAN:\n`;
-    
-    if (departed.length > 0) {
-        reportText += `- Phòng đi: ${departed.join(', ')}\n`;
-    } else {
-        reportText += `- Phòng đi: Không có\n`;
-    }
-    
-    if (staying.length > 0) {
-        reportText += `- Phòng lưu: ${staying.join(', ')}\n`;
-    } else {
-        reportText += `- Phòng lưu: Không có\n`;
-    }
-    
-    if (vacant.length > 0) {
-        reportText += `- Phòng trống: ${vacant.slice(0, 10).join(', ')}${vacant.length > 10 ? ',...' : ''}\n`;
-    } else {
-        reportText += `- Phòng trống: Không có\n`;
-    }
-    
-    if (arriving.length > 0) {
-        reportText += `- Phòng đến:\n`;
-        arriving.forEach((room, index) => {
-            reportText += `${index + 1}. ${room}\n`;
-        });
-    } else {
-        reportText += `- Phòng đến: Không có\n`;
-    }
-    
-    return reportText;
+  } else {
+    reportText += `- Phòng đến: Không có\n`;
+  }
+
+  return reportText;
+}
+
+//1N1K - 450, unassign -> 450, unassign
+function convertBookingRoomName(roomName) {
+  // Extract room number from format like "1N1K - 450"
+  const match = roomName.match(/-\s*(\d+)/);
+  if (match && match[1]) {
+    return match[1]; // Trả về số phòng sau dấu "-"
+  }
+
+  return roomName; // Fallback to original if no match
 }
 
 // Show simple popup with copyable text
 function showSimpleReportPopup(reportText) {
-    // Remove existing popup
-    const existingPopup = document.getElementById('simple-report-popup');
-    if (existingPopup) {
-        existingPopup.remove();
-    }
-    
-    // Create simple popup
-    const popup = document.createElement('div');
-    popup.id = 'simple-report-popup';
-    popup.style.cssText = `
+  // Remove existing popup
+  const existingPopup = document.getElementById("simple-report-popup");
+  if (existingPopup) {
+    existingPopup.remove();
+  }
+
+  // Create simple popup
+  const popup = document.createElement("div");
+  popup.id = "simple-report-popup";
+  popup.style.cssText = `
         position: fixed;
         top: 50%;
         left: 50%;
@@ -493,15 +620,16 @@ function showSimpleReportPopup(reportText) {
         border: 2px solid #ccc;
         border-radius: 8px;
         padding: 20px;
-        max-width: 600px;
+        width: 800px;
+        max-width: 95vw;
         max-height: 80vh;
         overflow-y: auto;
         box-shadow: 0 4px 20px rgba(0,0,0,0.3);
         z-index: 1000;
         font-family: monospace;
     `;
-    
-    popup.innerHTML = `
+
+  popup.innerHTML = `
         <div style="margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
             <h3 style="margin: 0; color: #333;">📊 Báo Cáo Tình Trạng Phòng</h3>
             <button onclick="closeSimpleReportPopup()" style="background: #ff5252; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer;">✕</button>
@@ -543,10 +671,11 @@ function showSimpleReportPopup(reportText) {
             ">Đóng</button>
         </div>
     `;
-    
-    // Add overlay
-    const overlay = document.createElement('div');
-    overlay.style.cssText = `
+
+  // Add overlay
+  const overlay = document.createElement("div");
+  overlay.id = "overlay";
+  overlay.style.cssText = `
         position: fixed;
         top: 0;
         left: 0;
@@ -555,106 +684,146 @@ function showSimpleReportPopup(reportText) {
         background: rgba(0,0,0,0.5);
         z-index: 999;
     `;
-    overlay.onclick = closeSimpleReportPopup;
-    
-    document.body.appendChild(overlay);
-    document.body.appendChild(popup);
-    
-    // Auto-select text for easy copying
-    document.getElementById('reportTextArea').focus();
-    document.getElementById('reportTextArea').select();
+  overlay.onclick = closeSimpleReportPopup;
+
+  document.body.appendChild(overlay);
+  document.body.appendChild(popup);
+
+  // Auto-select text for easy copying
+  document.getElementById("reportTextArea").focus();
+  document.getElementById("reportTextArea").select();
 }
 
 // Close simple report popup
 function closeSimpleReportPopup() {
-    const popup = document.getElementById('simple-report-popup');
-    const overlay = document.querySelector('div[style*="position: fixed"][style*="rgba(0,0,0,0.5)"]');
-    
-    if (popup) popup.remove();
-    if (overlay) overlay.remove();
+  const popup = document.getElementById("simple-report-popup");
+  const overlay = document.getElementById("overlay");
+  if (popup) popup.remove();
+  if (overlay) overlay.remove();
 }
 
 // Copy report text to clipboard
 function copyReportText() {
-    const textArea = document.getElementById('reportTextArea');
-    if (textArea) {
-        textArea.select();
-        textArea.setSelectionRange(0, 99999); // For mobile devices
-        
-        try {
-            document.execCommand('copy');
-            showNotification('Đã copy báo cáo vào clipboard!', 'success');
-        } catch (err) {
-            // Fallback for modern browsers
-            navigator.clipboard.writeText(textArea.value).then(() => {
-                showNotification('Đã copy báo cáo vào clipboard!', 'success');
-            }).catch(() => {
-                showNotification('Không thể copy. Vui lòng copy thủ công.', 'warning');
-            });
-        }
-    }
-}
+  const textArea = document.getElementById("reportTextArea");
+  if (textArea) {
+    textArea.select();
+    textArea.setSelectionRange(0, 99999); // For mobile devices
 
-// Format currency (simplified)
-function formatCurrency(amount) {
-    if (!amount || amount === '0') return '0 VND';
-    const numAmount = parseFloat(amount.toString().replace(/[^\d.-]/g, ''));
-    return numAmount.toLocaleString('vi-VN') + ' VND';
+    try {
+      document.execCommand("copy");
+      showNotification("Đã copy báo cáo vào clipboard!", "success");
+    } catch (err) {
+      // Fallback for modern browsers
+      navigator.clipboard
+        .writeText(textArea.value)
+        .then(() => {
+          showNotification("Đã copy báo cáo vào clipboard!", "success");
+        })
+        .catch(() => {
+          showNotification(
+            "Không thể copy. Vui lòng copy thủ công.",
+            "warning"
+          );
+        });
+    }
+  }
 }
 
 // ===== LEGACY SUPPORT FUNCTIONS =====
 
 // Display raw report data (for backward compatibility)
 function displayReportData(data) {
-    let reportSection = document.getElementById('reportSection');
-    if (!reportSection) {
-        reportSection = document.createElement('section');
-        reportSection.id = 'reportSection';
-        reportSection.className = 'demo-section';
-        reportSection.innerHTML = `
+  let reportSection = document.getElementById("reportSection");
+  if (!reportSection) {
+    reportSection = document.createElement("section");
+    reportSection.id = "reportSection";
+    reportSection.className = "demo-section";
+    reportSection.innerHTML = `
             <h2>OTA Report Data</h2>
             <div id="reportContent" class="report-content"></div>
         `;
-        document.querySelector('.main-content')?.appendChild(reportSection) || document.body.appendChild(reportSection);
-    }
+    document.querySelector(".main-content")?.appendChild(reportSection) ||
+      document.body.appendChild(reportSection);
+  }
 
-    const reportContent = document.getElementById('reportContent');
-    
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(data, 'text/html');
-    
-    const tables = doc.querySelectorAll('table');
-    const forms = doc.querySelectorAll('form');
-    
-    if (tables.length > 0) {
-        reportContent.innerHTML = '<h3>Found ' + tables.length + ' table(s):</h3>';
-        tables.forEach((table, index) => {
-            const tableContainer = document.createElement('div');
-            tableContainer.innerHTML = `<h4>Table ${index + 1}:</h4>`;
-            tableContainer.appendChild(table.cloneNode(true));
-            reportContent.appendChild(tableContainer);
-        });
-    } else if (forms.length > 0) {
-        reportContent.innerHTML = '<h3>Found ' + forms.length + ' form(s) - might need authentication</h3>';
-    } else {
-        reportContent.innerHTML = `
+  const reportContent = document.getElementById("reportContent");
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(data, "text/html");
+
+  const tables = doc.querySelectorAll("table");
+  const forms = doc.querySelectorAll("form");
+
+  if (tables.length > 0) {
+    reportContent.innerHTML = "<h3>Found " + tables.length + " table(s):</h3>";
+    tables.forEach((table, index) => {
+      const tableContainer = document.createElement("div");
+      tableContainer.innerHTML = `<h4>Table ${index + 1}:</h4>`;
+      tableContainer.appendChild(table.cloneNode(true));
+      reportContent.appendChild(tableContainer);
+    });
+  } else if (forms.length > 0) {
+    reportContent.innerHTML =
+      "<h3>Found " + forms.length + " form(s) - might need authentication</h3>";
+  } else {
+    reportContent.innerHTML = `
             <h3>Raw Response Preview:</h3>
-            <pre style="max-height: 400px; overflow-y: auto; background: #f5f5f5; padding: 1rem; border-radius: 4px;">${escapeHtml(data.substring(0, 2000))}${data.length > 2000 ? '\n... (truncated)' : ''}</pre>
+            <pre style="max-height: 400px; overflow-y: auto; background: #f5f5f5; padding: 1rem; border-radius: 4px;">${escapeHtml(
+              data.substring(0, 2000)
+            )}${data.length > 2000 ? "\n... (truncated)" : ""}</pre>
             <p><strong>Total length:</strong> ${data.length} characters</p>
         `;
-    }
+  }
 }
 
 function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// ===== FACILITY MANAGEMENT =====
+
+let facilities = [];
+
+// Load facilities when page loads
+document.addEventListener("DOMContentLoaded", async () => {
+  await loadFacilities();
+});
+
+// Load facilities from server
+async function loadFacilities() {
+  try {
+    const response = await fetch(`${SERVER_BASE_URL}/api/facilities`);
+    const data = await response.json();
+
+    if (data.success) {
+      facilities = data.facilities;
+      const select = document.getElementById("facilitySelect");
+      select.innerHTML = '<option value="">Chọn một cơ sở...</option>';
+
+      facilities.forEach((facility) => {
+        const option = document.createElement("option");
+        option.value = facility.id;
+        option.textContent = `${facility.name} (${facility.roomTypes.length} loại phòng)`;
+        select.appendChild(option);
+      });
+    } else {
+      console.error("Failed to load facilities");
+      const select = document.getElementById("facilitySelect");
+      select.innerHTML = '<option value="">Lỗi tải danh sách cơ sở</option>';
+    }
+  } catch (error) {
+    console.error("Error loading facilities:", error);
+    const select = document.getElementById("facilitySelect");
+    select.innerHTML = '<option value="">Lỗi kết nối server</option>';
+  }
 }
 
 // ===== BOOKING STYLES =====
 
 function getBookingStyles() {
-    return `
+  return `
         <style>
             /* Booking Report Section */
             .booking-report-section {
@@ -1020,4 +1189,4 @@ function getBookingStyles() {
 }
 
 // ===== INITIALIZATION =====
-console.log('Core Booking Data Script Loaded ✅');
+console.log("Core Booking Data Script Loaded ✅");
