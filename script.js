@@ -4,70 +4,6 @@ const SERVER_BASE_URL = "http://localhost:3001";
 
 // ===== MAIN FETCH FUNCTIONS =====
 
-// Fetch calendar data via Node.js server
-async function fetchCalendarDataViaServer() {
-  const facilityId = document.getElementById("facilitySelect").value;
-
-  if (!facilityId) {
-    updateApiStatus("error", "Vui lòng chọn cơ sở trước khi fetch dữ liệu");
-    return;
-  }
-
-  updateApiStatus("pending", "Calling Node.js server for calendar data...");
-
-  try {
-    console.log("📅 Calling Node.js server for calendar data...");
-
-    const response = await fetch(
-      `${SERVER_BASE_URL}/api/calendar-data`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          facilityId: facilityId,
-        }),
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error(`Server error: ${response.status}`);
-    }
-
-    const result = await response.json();
-
-    if (result.success) {
-      console.log("✅ Calendar data fetch successful");
-      console.log("Full result:", result);
-
-      // Display the data using the same format as regular booking data
-      displayBookingData(result);
-      updateApiStatus(
-        "success",
-        `✅ Thành công! Lấy được ${result.totalBookings} booking từ calendar data (${result.facility.name})`
-      );
-      showNotification(
-        `Lấy được ${result.totalBookings} booking từ calendar data!`,
-        "success"
-      );
-      
-      // Log the raw calendar data for debugging
-      if (result.rawCalendarData) {
-        console.log("📊 Raw Calendar Data:");
-        console.log("ListRoom:", result.rawCalendarData.listRoom);
-        console.log("BookingGroup:", result.rawCalendarData.bookingGroup);
-      }
-    } else {
-      throw new Error(result.error || "Calendar data fetch failed");
-    }
-  } catch (error) {
-    console.error("❌ Calendar data fetch error:", error);
-    updateApiStatus("error", `Calendar data error: ${error.message}`);
-    showNotification(`Calendar Data Error: ${error.message}`, "error");
-  }
-}
-
 // Fetch single page via Node.js server
 async function fetchReportViaServer() {
   const facilityId = document.getElementById("facilitySelect").value;
@@ -312,7 +248,9 @@ function displayBookingData(reportData) {
                     </div>
                     <div class="breakdown-item">
                         <span class="breakdown-label">Data Source:</span>
-                        <span class="breakdown-value">BlueJay PMS - ${reportData.facility?.name || 'Era Apartment'}</span>
+                        <span class="breakdown-value">BlueJay PMS - ${
+                          reportData.facility?.name || "Era Apartment"
+                        }</span>
                     </div>
                     <div class="breakdown-item">
                         <span class="breakdown-label">Report Period:</span>
@@ -537,11 +475,15 @@ function getReport() {
     return;
   }
 
-  // Generate report text
-  const reportText = generateReportText(bookings);
+  // Get facility ID from current selection
+  const facilityId = document.getElementById("facilitySelect").value;
+  if (!facilityId) {
+    showNotification("Vui lòng chọn cơ sở để tạo báo cáo!", "warning");
+    return;
+  }
 
-  // Show simple text popup
-  showSimpleReportPopup(reportText);
+  // Fetch room list and generate report
+  generateReportWithRoomList(bookings, facilityId);
 }
 
 // Get current bookings data from the displayed table
@@ -557,15 +499,77 @@ function getCurrentBookingsData() {
   return null;
 }
 
-// Generate simple text report using TypeSeachDate-based categorization
-function generateReportText(bookings) {
+// New function to fetch room list and generate report
+async function generateReportWithRoomList(bookings, facilityId) {
+  try {
+    console.log("🏠 Fetching room list for report generation...");
+
+    // Fetch room list from server
+    const response = await fetch(`${SERVER_BASE_URL}/api/list-rooms`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        facilityId: facilityId,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Server error: ${response.status}`);
+    }
+
+    const roomData = await response.json();
+
+    if (roomData.success && roomData.rooms) {
+      console.log(
+        "✅ Room list fetched successfully:",
+        roomData.rooms.length,
+        "rooms"
+      );
+
+      // Extract room numbers for vacant room calculation
+      const allRoomNumbers = roomData.rooms.map((room) => room.roomNumber);
+
+      // Generate report text with room list
+      const reportText = generateReportText(bookings, allRoomNumbers);
+
+      // Show report popup
+      showSimpleReportPopup(reportText);
+    } else {
+      console.warn(
+        "⚠️ Failed to fetch room list, generating report without vacant rooms"
+      );
+      // Fallback to original method without room list
+      const reportText = generateReportText(bookings);
+      showSimpleReportPopup(reportText);
+    }
+  } catch (error) {
+    console.error("❌ Error fetching room list:", error);
+    showNotification(
+      "Lỗi khi lấy danh sách phòng, tạo báo cáo cơ bản...",
+      "warning"
+    );
+
+    // Fallback to original method without room list
+    const reportText = generateReportText(bookings);
+    showSimpleReportPopup(reportText);
+  }
+}
+
+// Updated generateReportText function to accept room list parameter
+function generateReportText(bookings, allRoomNumbers = null) {
   const currentDate = new Date().toLocaleDateString("vi-VN");
-  
+
   // Get facility name from the last booking data or fallback to default
   let facilityName = "Era Apartment - 58 Nguyễn Khánh Toàn"; // Default fallback
-  
+
   // Try to get facility name from global booking data
-  if (window.lastBookingData && window.lastBookingData.facility && window.lastBookingData.facility.name) {
+  if (
+    window.lastBookingData &&
+    window.lastBookingData.facility &&
+    window.lastBookingData.facility.name
+  ) {
     facilityName = window.lastBookingData.facility.name;
   }
 
@@ -573,7 +577,7 @@ function generateReportText(bookings) {
   const departed = []; // TypeSeachDate = 1 (Phòng đi)
   const staying = []; // TypeSeachDate = 3 (Phòng lưu)
   const arriving = []; // TypeSeachDate = 0 (Phòng đến)
-  const vacant = []; // Phòng trống (các phòng còn lại)
+  const vacant = []; // Phòng trống
 
   // Get all occupied room numbers
   const occupiedRooms = new Set();
@@ -586,7 +590,7 @@ function generateReportText(bookings) {
     if (typeSeachDate === 1) {
       // Phòng đi (departed)
       departed.push(roomNumber);
-      occupiedRooms.add(roomNumber);
+      // occupiedRooms.add(roomNumber);
     } else if (typeSeachDate === 3) {
       // Phòng lưu (staying)
       staying.push(roomNumber);
@@ -595,40 +599,39 @@ function generateReportText(bookings) {
       // Phòng đến (arriving) - with full details
       // Sử dụng Day.js để xử lý ngày tháng đơn giản hơn
       dayjs.extend(dayjs_plugin_customParseFormat);
-      
-      const checkinDate = dayjs(booking.checkinDate, 'DD/MM/YYYY');
-      const checkoutDate = dayjs(booking.checkoutDate, 'DD/MM/YYYY');
-      const nights = Math.max(1, checkoutDate.diff(checkinDate, 'day'));
+
+      const checkinDate = dayjs(booking.checkinDate, "DD/MM/YYYY");
+      const checkoutDate = dayjs(booking.checkoutDate, "DD/MM/YYYY");
+      const nights = Math.max(1, checkoutDate.diff(checkinDate, "day"));
 
       const roomInfo = `P${roomNumber} - ${booking.guestName || ""} - checkin ${
         booking.checkinDate || ""
-      } checkout ${booking.checkoutDate || ""} - ${nights} đêm - ${booking.source || ""}: ${
-        booking.totalAmount || "0"
-      }`;
+      } checkout ${booking.checkoutDate || ""} - ${nights} đêm - ${
+        booking.source || ""
+      }: ${booking.totalAmount || "0"}`;
       arriving.push(roomInfo);
       occupiedRooms.add(roomNumber);
     }
   });
 
-  // Generate vacant rooms (assuming rooms 1N1K-201 to 1N1K-620)
-  //   const allRoomNumbers = [];
-  //   for (let floor = 2; floor <= 6; floor++) {
-  //     for (let room = 1; room <= 20; room++) {
-  //       if (room <= 4 || (room >= 10 && room <= 15)) {
-  //         // Typical hotel room numbering
-  //         allRoomNumbers.push(
-  //           `1N1K - ${floor}0${room.toString().padStart(1, "0")}`
-  //         );
-  //       }
-  //     }
-  //   }
-
-  //   // Find vacant rooms (not in any category)
-  //   allRoomNumbers.forEach((roomNum) => {
-  //     if (!occupiedRooms.has(roomNum)) {
-  //       vacant.push(roomNum);
-  //     }
-  //   });
+  // Calculate vacant rooms using room list from server (if available)
+  if (allRoomNumbers && Array.isArray(allRoomNumbers)) {
+    console.log("🔍 Calculating vacant rooms from server room list...");
+    allRoomNumbers.forEach((roomNumber) => {
+      if (!occupiedRooms.has(roomNumber)) {
+        vacant.push(roomNumber);
+      }
+    });
+    console.log(
+      "✅ Found",
+      vacant.length,
+      "vacant rooms from",
+      allRoomNumbers.length,
+      "total rooms"
+    );
+  } else {
+    console.log("⚠️ No room list provided, skipping vacant room calculation");
+  }
 
   // Build report text
   let reportText = `${facilityName}\nBáo cáo ngày: ${currentDate}\n\n`;
@@ -648,16 +651,18 @@ function generateReportText(bookings) {
   }
 
   if (vacant.length > 0) {
-    reportText += `- Phòng trống: ${vacant.slice(0, 10).join(", ")}${
-      vacant.length > 10 ? ",..." : ""
-    }\n`;
-  } else {
+    reportText += `- Phòng trống: ${vacant.join(", ")}\n`;
+  } else if (allRoomNumbers) {
+    // Only show "Không có" if we actually checked for vacant rooms
     reportText += `- Phòng trống: Không có\n`;
+  } else {
+    // If no room list was provided, indicate that vacant rooms weren't calculated
+    reportText += `- Phòng trống: Chưa tính toán (thiếu danh sách phòng)\n`;
   }
 
   if (arriving.length > 0) {
     reportText += `- Phòng đến:\n`;
-    arriving.forEach((room, index) => {
+    arriving.forEach((room) => {
       reportText += `${room}\n`;
     });
   } else {
