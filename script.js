@@ -248,7 +248,7 @@ function displayBookingData(reportData) {
                     </div>
                     <div class="breakdown-item">
                         <span class="breakdown-label">Data Source:</span>
-                        <span class="breakdown-value">BlueJay PMS - Era Apartment</span>
+                        <span class="breakdown-value">BlueJay PMS - ${reportData.facility?.name || 'Era Apartment'}</span>
                     </div>
                     <div class="breakdown-item">
                         <span class="breakdown-label">Report Period:</span>
@@ -496,7 +496,14 @@ function getCurrentBookingsData() {
 // Generate simple text report using TypeSeachDate-based categorization
 function generateReportText(bookings) {
   const currentDate = new Date().toLocaleDateString("vi-VN");
-  const facilityName = "Era Apartment - 58 Nguyễn Khánh Toàn";
+  
+  // Get facility name from the last booking data or fallback to default
+  let facilityName = "Era Apartment - 58 Nguyễn Khánh Toàn"; // Default fallback
+  
+  // Try to get facility name from global booking data
+  if (window.lastBookingData && window.lastBookingData.facility && window.lastBookingData.facility.name) {
+    facilityName = window.lastBookingData.facility.name;
+  }
 
   // Categorize rooms by TypeSeachDate
   const departed = []; // TypeSeachDate = 1 (Phòng đi)
@@ -522,9 +529,16 @@ function generateReportText(bookings) {
       occupiedRooms.add(roomNumber);
     } else if (typeSeachDate === 0) {
       // Phòng đến (arriving) - with full details
+      // Sử dụng Day.js để xử lý ngày tháng đơn giản hơn
+      dayjs.extend(dayjs_plugin_customParseFormat);
+      
+      const checkinDate = dayjs(booking.checkinDate, 'DD/MM/YYYY');
+      const checkoutDate = dayjs(booking.checkoutDate, 'DD/MM/YYYY');
+      const nights = Math.max(1, checkoutDate.diff(checkinDate, 'day'));
+
       const roomInfo = `P${roomNumber} - ${booking.guestName || ""} - checkin ${
         booking.checkinDate || ""
-      } checkout ${booking.checkoutDate || ""} - ${booking.source || ""}: ${
+      } checkout ${booking.checkoutDate || ""} - ${nights} đêm - ${booking.source || ""}: ${
         booking.totalAmount || "0"
       }`;
       arriving.push(roomInfo);
