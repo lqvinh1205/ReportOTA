@@ -4,6 +4,70 @@ const SERVER_BASE_URL = "http://localhost:3001";
 
 // ===== MAIN FETCH FUNCTIONS =====
 
+// Fetch calendar data via Node.js server
+async function fetchCalendarDataViaServer() {
+  const facilityId = document.getElementById("facilitySelect").value;
+
+  if (!facilityId) {
+    updateApiStatus("error", "Vui lòng chọn cơ sở trước khi fetch dữ liệu");
+    return;
+  }
+
+  updateApiStatus("pending", "Calling Node.js server for calendar data...");
+
+  try {
+    console.log("📅 Calling Node.js server for calendar data...");
+
+    const response = await fetch(
+      `${SERVER_BASE_URL}/api/calendar-data`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          facilityId: facilityId,
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Server error: ${response.status}`);
+    }
+
+    const result = await response.json();
+
+    if (result.success) {
+      console.log("✅ Calendar data fetch successful");
+      console.log("Full result:", result);
+
+      // Display the data using the same format as regular booking data
+      displayBookingData(result);
+      updateApiStatus(
+        "success",
+        `✅ Thành công! Lấy được ${result.totalBookings} booking từ calendar data (${result.facility.name})`
+      );
+      showNotification(
+        `Lấy được ${result.totalBookings} booking từ calendar data!`,
+        "success"
+      );
+      
+      // Log the raw calendar data for debugging
+      if (result.rawCalendarData) {
+        console.log("📊 Raw Calendar Data:");
+        console.log("ListRoom:", result.rawCalendarData.listRoom);
+        console.log("BookingGroup:", result.rawCalendarData.bookingGroup);
+      }
+    } else {
+      throw new Error(result.error || "Calendar data fetch failed");
+    }
+  } catch (error) {
+    console.error("❌ Calendar data fetch error:", error);
+    updateApiStatus("error", `Calendar data error: ${error.message}`);
+    showNotification(`Calendar Data Error: ${error.message}`, "error");
+  }
+}
+
 // Fetch single page via Node.js server
 async function fetchReportViaServer() {
   const facilityId = document.getElementById("facilitySelect").value;
