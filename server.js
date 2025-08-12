@@ -49,10 +49,14 @@ function extractCookies(response) {
   return "";
 }
 
-// Login endpoint
-app.post("/api/login", async (req, res) => {
+// Reusable login function
+async function performLogin(facilityEmail = null, facilityPassword = null) {
   try {
     console.log("🔐 Starting login process...");
+
+    // Use facility credentials or default params
+    const email = facilityEmail || params.txtEmail;
+    const password = facilityPassword || params.txtPassword;
 
     // First, get the login page to extract viewstate and other hidden fields
     const loginPageResponse = await axios.get(loginPath, {
@@ -96,8 +100,8 @@ app.post("/api/login", async (req, res) => {
       __VIEWSTATEGENERATOR: viewStateGenerator,
       __EVENTVALIDATION: eventValidation,
       ddlLangCode: "vi-VN",
-      txtEmail: params.txtEmail,
-      txtPassword: params.txtPassword,
+      txtEmail: email,
+      txtPassword: password,
     });
 
     // Perform login
@@ -129,16 +133,16 @@ app.post("/api/login", async (req, res) => {
     console.log("✅ Login response status:", loginResponse.status);
     console.log("🍪 Updated cookies:", sessionCookies);
 
-    res.json({
+    return {
       success: true,
       status: loginResponse.status,
       message: "Login successful",
       cookies: sessionCookies,
       redirectLocation: loginResponse.headers.location || null,
-    });
+    };
   } catch (error) {
     console.error("❌ Login error:", error.message);
-    res.status(500).json({
+    return {
       success: false,
       error: error.message,
       details: error.response
@@ -147,6 +151,20 @@ app.post("/api/login", async (req, res) => {
             data: error.response.data.substring(0, 500),
           }
         : null,
+    };
+  }
+}
+
+// Login endpoint
+app.post("/api/login", async (req, res) => {
+  try {
+    const loginResult = await performLogin();
+    res.json(loginResult);
+  } catch (error) {
+    console.error("❌ Login endpoint error:", error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
     });
   }
 });
@@ -944,6 +962,593 @@ function extractTextFromCell(cellHtml) {
     .replace(/&#(\d+);/g, (match, dec) => String.fromCharCode(dec));
 
   return text.trim();
+}
+
+// New API endpoint to fetch calendar data
+app.post("/api/calendar-data", async (req, res) => {
+  try {
+    const { facilityId } = req.body;
+    
+    if (!facilityId) {
+      return res.status(400).json({
+        success: false,
+        error: "facilityId is required"
+      });
+    }
+
+    console.log("📅 Starting calendar data fetch for facility:", facilityId);
+
+    // Get facility configuration
+    const facility = facilities[facilityId];
+    if (!facility) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid facilityId"
+      });
+    }
+
+    // Login first if not already logged in or use facility credentials
+    if (!sessionCookies) {
+      console.log("🔐 No session found, logging in with facility credentials...");
+      const loginResponse = await performLogin(facility.email, facility.password);
+      if (!loginResponse.success) {
+        return res.status(500).json(loginResponse);
+      }
+    }
+
+    // Fetch calendar page data
+    const calendarUrl = `${baseUrl}/app/calendar`;
+    
+    console.log("🌐 Fetching calendar page...");
+    const calendarResponse = await axios.get(calendarUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
+        "Cookie": sessionCookies,
+        "Cache-Control": "no-cache",
+      },
+    });
+
+    if (calendarResponse.status !== 200) {
+      throw new Error(`Calendar page request failed: ${calendarResponse.status}`);
+    }
+
+    console.log("✅ Calendar page loaded successfully");
+    
+    // Extract CalendarOption data from the page
+    const calendarHtml = calendarResponse.data;
+    const calendarData = extractCalendarOptionData(calendarHtml);
+
+    if (!calendarData.success) {
+      return res.status(500).json({
+        success: false,
+        error: "Failed to extract calendar data from page"
+      });
+    }
+
+    // Transform data to match the format of login-and-fetch-facility
+    const transformedBookings = transformCalendarBookings(calendarData.bookingGroup, calendarData.listRoom, facility.roomTypes);
+
+    // Add facility information to each booking to match login-and-fetch-facility format
+    const bookingsWithFacilityInfo = transformedBookings.map(booking => {
+      // Update property name with facility info to match reservation format
+      let propertyName = facility.name.toUpperCase();
+      
+      // Try to make it more specific like reservation format
+      if (booking.room && booking.room !== "Room Unknown") {
+        // Extract room prefix for property naming
+        const roomPrefix = booking.room.split(' - ')[0]; // Get "STD" from "STD - NKT - 304"
+        if (roomPrefix) {
+          propertyName = `${facility.name.toUpperCase()} - ${roomPrefix} VIEW`;
+        }
+      }
+      
+      return {
+        ...booking,
+        property: propertyName, // Update with proper facility name format
+        facilityId: facilityId,
+        facilityName: facility.name,
+        roomType: facility.roomTypes[0] || 10559 // Use first room type or default
+      };
+    });
+
+    // Categorize rooms according to the new spec
+    const roomCategories = categorizeRoomsFromCalendar(bookingsWithFacilityInfo, calendarData.listRoom, facility.roomTypes);
+
+    // Response with the same structure as login-and-fetch-facility
+    const response = {
+      success: true,
+      facility: {
+        id: facilityId,
+        name: facility.name,
+        roomTypes: facility.roomTypes
+      },
+      totalBookings: bookingsWithFacilityInfo.length,
+      bookings: bookingsWithFacilityInfo,
+      timestamp: new Date().toISOString(),
+      summary: {
+        source: "calendar",
+        totalPagesProcessed: 1,
+        searchTypes: ["calendar-data"],
+        dataExtracted: {
+          listRoom: calendarData.listRoom?.length || 0,
+          bookingGroup: calendarData.bookingGroup?.length || 0
+        },
+        roomCategories: roomCategories
+      },
+      rawCalendarData: {
+        listRoom: calendarData.listRoom,
+        bookingGroup: calendarData.bookingGroup
+      }
+    };
+
+    console.log("✅ Calendar data transformation complete");
+    console.log("📊 Total bookings:", bookingsWithFacilityInfo.length);
+
+    res.json(response);
+
+  } catch (error) {
+    console.error("❌ Calendar data fetch error:", error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: error.stack
+    });
+  }
+});
+
+// Helper function to extract CalendarOption data from HTML
+function extractCalendarOptionData(html) {
+  try {
+    // Look for CalendarOption.ListRoom and CalendarOption.BookingGroup in the script
+    const listRoomMatch = html.match(/CalendarOption\.ListRoom\s*=\s*(\[[\s\S]*?\]);/);
+    const bookingGroupMatch = html.match(/CalendarOption\.BookingGroup\s*=\s*(\[[\s\S]*?\]);/);
+
+    let listRoom = [];
+    let bookingGroup = [];
+
+    if (listRoomMatch && listRoomMatch[1]) {
+      try {
+        // Clean up the JavaScript code and evaluate it safely
+        const listRoomCode = listRoomMatch[1];
+        listRoom = JSON.parse(listRoomCode);
+        console.log("✅ Extracted ListRoom data:", listRoom.length, "rooms");
+      } catch (e) {
+        console.warn("⚠️ Failed to parse ListRoom:", e.message);
+      }
+    }
+
+    if (bookingGroupMatch && bookingGroupMatch[1]) {
+      try {
+        // Clean up the JavaScript code and evaluate it safely
+        const bookingGroupCode = bookingGroupMatch[1];
+        bookingGroup = JSON.parse(bookingGroupCode);
+        console.log("✅ Extracted BookingGroup data:", bookingGroup.length, "bookings");
+      } catch (e) {
+        console.warn("⚠️ Failed to parse BookingGroup:", e.message);
+      }
+    }
+
+    return {
+      success: true,
+      listRoom: listRoom,
+      bookingGroup: bookingGroup
+    };
+
+  } catch (error) {
+    console.error("❌ Calendar data extraction error:", error.message);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+// Helper function to transform calendar bookings to reservation format
+function transformCalendarBookings(bookingGroup, listRoom, facilityRoomTypes = []) {
+  if (!bookingGroup || !Array.isArray(bookingGroup)) {
+    return [];
+  }
+
+  // Create room lookup map and filter by facility room types
+  const roomMap = {};
+  console.log("🔍 Starting room filtering process...");
+  console.log("🔍 listRoom exists:", !!listRoom);
+  console.log("🔍 listRoom isArray:", Array.isArray(listRoom));
+  console.log("🔍 listRoom length:", listRoom?.length);
+  
+  if (listRoom && Array.isArray(listRoom)) {
+    console.log("🔍 Processing rooms...");
+    let roomCount = 0;
+    listRoom.forEach((room, index) => {
+      roomCount++;
+      if (room.Id) {
+        // Only include rooms that match the facility's room types
+        // Check RoomTypeId, Group, or TypeRoomId properties
+        const roomTypeId = room.RoomTypeId || room.Group || room.TypeRoomId || room.Type;
+        const shouldInclude = facilityRoomTypes.length === 0 || facilityRoomTypes.includes(roomTypeId);
+        
+        // Debug: log first few rooms to see what's happening
+        if (index < 5) {
+          console.log(`🔍 Room ${room.Id} (${room.Name}): roomTypeId=${roomTypeId}, shouldInclude=${shouldInclude}, facilityRoomTypes=${JSON.stringify(facilityRoomTypes)}`);
+        }
+        
+        if (shouldInclude) {
+          roomMap[room.Id] = room;
+        }
+      } else {
+        if (index < 5) {
+          console.log(`🔍 Room at index ${index} has no Id:`, JSON.stringify(room));
+        }
+      }
+    });
+    console.log("🔍 Processed", roomCount, "rooms total");
+  } else {
+    console.log("🔍 No valid listRoom data");
+  }
+
+  console.log("🔍 Total listRoom:", listRoom?.length || 0);
+  console.log("🔍 Filtered rooms by roomTypes:", Object.keys(roomMap).length);
+  console.log("🔍 Facility roomTypes filter:", facilityRoomTypes);
+
+  // Filter bookings to only include those using rooms that match facility room types
+  const filteredBookings = bookingGroup.filter(booking => {
+    const roomId = booking.Details?.[0]?.RoomId || booking.RoomId;
+    return roomMap[roomId]; // Only include if room is in our filtered room map
+  });
+
+  console.log("🔍 Total bookings before filter:", bookingGroup.length);
+  console.log("🔍 Bookings after room type filter:", filteredBookings.length);
+
+  // Additional date filtering: only include bookings that meet date criteria
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  const dateFilteredBookings = filteredBookings.filter(booking => {
+    const checkin = new Date(booking.BeginDate || booking.CheckInDate || booking.FromDate || booking.StartDate);
+    checkin.setHours(0, 0, 0, 0);
+    
+    const checkout = new Date(booking.EndDate || booking.CheckOutDate || booking.ToDate);
+    checkout.setHours(0, 0, 0, 0);
+
+    // Phòng đi: end date = now (checkout today)
+    const isPhongDi = checkout.getTime() === today.getTime();
+    
+    // Phòng đến: start date = now (checkin today)
+    const isPhongDen = checkin.getTime() === today.getTime();
+    
+    // Phòng lưu: start date < now < end date (currently staying)
+    const isPhongLuu = checkin < today && checkout > today;
+
+    return isPhongDi || isPhongDen || isPhongLuu;
+  });
+
+  console.log("🔍 Bookings after date filter:", dateFilteredBookings.length);
+  console.log("🔍 Date criteria - Today:", today.toISOString().split('T')[0]);
+
+  return dateFilteredBookings.map((booking, index) => {
+    // Get room information from Details[0].RoomId (not booking.RoomId)
+    const roomId = booking.Details?.[0]?.RoomId || booking.RoomId;
+    const room = roomMap[roomId] || {};
+    const roomName = room.Name || `Room ${roomId || 'Unknown'}`;
+
+    // Status mapping for calendar data
+    let status = "Unknown";
+    if (booking.Status !== undefined && booking.Status !== null) {
+      if (typeof booking.Status === 'number') {
+        // Map status codes to text like reservation system
+        const statusMap = {
+          0: "Đã xác nhận", // Confirmed
+          1: "Đang giữ phòng", // Reserved/Holding
+          2: "Hủy", // Cancelled  
+          3: "Đã nhận phòng", // Checked-in
+          4: "Đã trả phòng", // Checked-out
+        };
+        status = statusMap[booking.Status] || `Status ${booking.Status}`;
+      } else {
+        status = String(booking.Status);
+      }
+    }
+
+    // Determine searchType and typeSeachDate using ORIGINAL LOGIC from reservation system
+    let searchType = "Unknown";
+    let typeSeachDate = 0; // Default
+    
+    if (status && typeof status === 'string') {
+      const statusLower = status.toLowerCase();
+      
+      // Original logic: check status string for keywords
+      if (statusLower.includes('nhận phòng') || statusLower.includes('check') || statusLower.includes('arrived')) {
+        searchType = "Phòng đến";
+        typeSeachDate = 0; // Arriving
+      } else if (statusLower.includes('trả phòng') || statusLower.includes('checkout') || statusLower.includes('depart')) {
+        searchType = "Phòng đi"; 
+        typeSeachDate = 1; // Departing
+      } else if (statusLower.includes('lưu') || statusLower.includes('stay') || statusLower.includes('occupied')) {
+        searchType = "Phòng lưu";
+        typeSeachDate = 3; // Staying
+      } else {
+        // Fallback: use date-based logic if status doesn't contain keywords
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        const checkin = new Date(booking.BeginDate || booking.CheckInDate || booking.FromDate);
+        checkin.setHours(0, 0, 0, 0);
+        
+        const checkout = new Date(booking.EndDate || booking.CheckOutDate || booking.ToDate);
+        checkout.setHours(0, 0, 0, 0);
+
+        if (checkin.getTime() === today.getTime()) {
+          searchType = "Phòng đến";
+          typeSeachDate = 0; // Arriving
+        } else if (checkout.getTime() === today.getTime()) {
+          searchType = "Phòng đi";
+          typeSeachDate = 1; // Departing
+        } else if (checkin < today && checkout > today) {
+          searchType = "Phòng lưu";
+          typeSeachDate = 3; // Staying
+        }
+      }
+    }
+
+    // Format amounts to match reservation format
+    const totalAmount = booking.Total || booking.TotalAmount || booking.Amount || 0;
+    const paidAmount = booking.Payment || booking.Paid || booking.PaidAmount || 0;
+    const balanceAmount = booking.Balance || booking.Outstanding || (totalAmount - paidAmount);
+
+    // Format notes like reservation system (string, not array)
+    let notesString = "";
+    if (booking.Notes && Array.isArray(booking.Notes) && booking.Notes.length > 0) {
+      // Take the first note or combine them
+      notesString = booking.Notes.map(note => note.Note || note).join("; ");
+    } else if (typeof booking.Notes === 'string') {
+      notesString = booking.Notes;
+    } else {
+      // Default to balance amount like reservation system when notes is empty
+      notesString = formatAmountForReservation(balanceAmount);
+    }
+
+    return {
+      // EXACT SAME FORMAT as login-and-fetch-facility response
+      bookingCode: booking.Code || booking.BookingCode || `CAL-${index + 1}`,
+      otaReference: booking.OTAReference || booking.OtaReference || "",
+      guestName: booking.Name || booking.Customer || booking.GuestName || booking.CustomerName || "",
+      property: "Calendar Property", // Will be updated with facility info later
+      room: roomName,
+      source: booking.ChanelName || booking.Source || "Calendar",
+      status: status,
+      bookingDate: formatDate(booking.BookingDate || booking.CreatedDate || new Date().toISOString()), // Add current date if missing
+      checkinDate: formatDate(booking.BeginDate || booking.CheckInDate || booking.FromDate || booking.StartDate),
+      checkinTime: booking.ArrivalTime || booking.CheckInTime || "14:00", // Add checkinTime with default
+      checkoutDate: formatDate(booking.EndDate || booking.CheckOutDate || booking.ToDate),
+      checkoutTime: booking.DepartureTime || booking.CheckOutTime || "12:00", // Add checkoutTime with default
+      totalAmount: formatAmountForReservation(totalAmount), // Format like reservation
+      paid: formatAmountForReservation(paidAmount), // Add paid field
+      balance: formatAmountForReservation(balanceAmount), // Format like reservation
+      notes: notesString, // Format as string like reservation system
+      
+      // Additional fields to match login-and-fetch-facility
+      searchType: searchType, // Using original logic
+      typeSeachDate: typeSeachDate, // Using original logic
+      
+      // Calendar-specific fields (keep these for debugging)
+      roomId: roomId,
+      bookingId: booking.Id || booking.BookingId,
+      nights: booking.Days || booking.Nights || calculateNights(
+        booking.BeginDate || booking.CheckInDate || booking.FromDate || booking.StartDate, 
+        booking.EndDate || booking.CheckOutDate || booking.ToDate
+      ),
+      adults: booking.Adults || booking.AdultCount || 1,
+      children: booking.Children || booking.ChildCount || 0,
+      // Raw booking data for debugging
+      rawBooking: booking
+    };
+  });
+}
+
+// Helper function to format amount like reservation system (without VND, just number with dots)
+function formatAmountForReservation(amount) {
+  if (!amount && amount !== 0) return "0";
+  
+  // Convert to number if it's a string
+  let numAmount = typeof amount === 'string' ? parseFloat(amount.replace(/[^\d.-]/g, '')) : amount;
+  if (isNaN(numAmount)) numAmount = 0;
+  
+  // Format like reservation system: "294.000" (with dots as thousands separator)
+  return numAmount.toLocaleString("de-DE"); // German locale uses dots for thousands
+}
+
+// Helper function to determine search type from calendar booking
+function getSearchTypeFromCalendarBooking(booking) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0); // Set to start of day for accurate comparison
+  
+  const checkin = new Date(booking.CheckInDate || booking.FromDate);
+  checkin.setHours(0, 0, 0, 0);
+  
+  const checkout = new Date(booking.CheckOutDate || booking.ToDate);
+  checkout.setHours(0, 0, 0, 0);
+
+  // Phòng đi: end date = now (checkout today)
+  if (checkout.getTime() === today.getTime()) {
+    return "Phòng đi";
+  }
+  // Phòng đến: start date = now (checkin today)  
+  else if (checkin.getTime() === today.getTime()) {
+    return "Phòng đến";
+  }
+  // Phòng lưu: start date < now < end date (currently staying)
+  else if (checkin < today && checkout > today) {
+    return "Phòng lưu";
+  }
+  
+  return "Unknown";
+}
+
+// Helper function to determine TypeSeachDate from calendar booking
+function determineTypeSeachDate(booking) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0); // Set to start of day for accurate comparison
+  
+  const checkin = new Date(booking.CheckInDate || booking.FromDate);
+  checkin.setHours(0, 0, 0, 0);
+  
+  const checkout = new Date(booking.CheckOutDate || booking.ToDate);
+  checkout.setHours(0, 0, 0, 0);
+
+  // Phòng đi: end date = now (checkout today)
+  if (checkout.getTime() === today.getTime()) {
+    return 1; // Departing
+  }
+  // Phòng đến: start date = now (checkin today)
+  else if (checkin.getTime() === today.getTime()) {
+    return 0; // Arriving
+  }
+  // Phòng lưu: start date < now < end date (currently staying)
+  else if (checkin < today && checkout > today) {
+    return 3; // Staying
+  }
+  
+  return 0; // Default to arriving
+}
+
+// Helper function to check if date is today
+function isToday(date) {
+  if (!date) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  const checkDate = new Date(date);
+  checkDate.setHours(0, 0, 0, 0);
+  
+  return checkDate.getTime() === today.getTime();
+}
+
+// Helper function to categorize rooms from calendar data using ORIGINAL LOGIC
+function categorizeRoomsFromCalendar(bookings, listRoom, facilityRoomTypes = []) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  // Initialize categories using ORIGINAL NAMES from reservation system
+  const categories = {
+    phongDi: [], // TypeSeachDate = 1 (Phòng đi) 
+    phongDen: [], // TypeSeachDate = 0 (Phòng đến)
+    phongLuu: [], // TypeSeachDate = 3 (Phòng lưu)
+    phongTrong: [] // Phòng trống: các phòng còn lại chưa có booking nào
+  };
+
+  // Get all occupied room IDs
+  const occupiedRoomIds = new Set();
+
+  // Categorize bookings using ORIGINAL LOGIC (based on typeSeachDate from status parsing)
+  bookings.forEach(booking => {
+    const roomInfo = {
+      roomId: booking.roomId,
+      roomName: booking.room,
+      guestName: booking.guestName,
+      bookingCode: booking.bookingCode,
+      checkinDate: booking.checkinDate,
+      checkoutDate: booking.checkoutDate,
+      nights: booking.nights,
+      source: booking.source,
+      totalAmount: booking.totalAmount,
+      status: booking.status // Include original status for reference
+    };
+
+    // Track occupied rooms
+    occupiedRoomIds.add(booking.roomId);
+
+    // Categorize using ORIGINAL typeSeachDate logic
+    if (booking.typeSeachDate === 1) {
+      // Phòng đi (departed)
+      categories.phongDi.push(roomInfo);
+    } else if (booking.typeSeachDate === 0) {
+      // Phòng đến (arriving) 
+      categories.phongDen.push(roomInfo);
+    } else if (booking.typeSeachDate === 3) {
+      // Phòng lưu (staying)
+      categories.phongLuu.push(roomInfo);
+    }
+    // Note: Keeping original logic - other typeSeachDate values are not categorized
+  });
+
+  // Find vacant rooms (phòng trống) - Filter by facility room types
+  if (listRoom && Array.isArray(listRoom)) {
+    listRoom.forEach(room => {
+      // Only include rooms that match facility room types and are not occupied
+      const roomTypeId = room.RoomTypeId || room.Group || room.TypeRoomId || room.Type;
+      const roomMatchesFacility = facilityRoomTypes.length === 0 || facilityRoomTypes.includes(roomTypeId);
+      if (roomMatchesFacility && !occupiedRoomIds.has(room.Id)) {
+        categories.phongTrong.push({
+          roomId: room.Id,
+          roomName: room.Name || `Room ${room.Id}`,
+          roomType: roomTypeId,
+          floor: room.Floor,
+          status: "Vacant"
+        });
+      }
+    });
+  }
+
+  return {
+    phongDi: {
+      count: categories.phongDi.length,
+      rooms: categories.phongDi
+    },
+    phongDen: {
+      count: categories.phongDen.length,
+      rooms: categories.phongDen
+    },
+    phongLuu: {
+      count: categories.phongLuu.length,
+      rooms: categories.phongLuu
+    },
+    phongTrong: {
+      count: categories.phongTrong.length,
+      rooms: categories.phongTrong
+    },
+    summary: {
+      totalRooms: listRoom?.length || 0,
+      filteredRooms: listRoom?.filter(room => {
+        const roomTypeId = room.RoomTypeId || room.Group || room.TypeRoomId || room.Type;
+        return facilityRoomTypes.length === 0 || facilityRoomTypes.includes(roomTypeId);
+      }).length || 0,
+      facilityRoomTypes: facilityRoomTypes,
+      occupiedRooms: occupiedRoomIds.size,
+      vacantRooms: categories.phongTrong.length,
+      date: today.toISOString().split('T')[0],
+      logic: "original_typeSeachDate_based" // Indicator of logic used
+    }
+  };
+}
+
+// Helper function to format date
+function formatDate(dateStr) {
+  if (!dateStr) return "";
+  try {
+    const date = new Date(dateStr);
+    const day = String(date.getDate()).padStart(2, "0");
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const year = date.getFullYear();
+    return `${day}/${month}/${year}`;
+  } catch (e) {
+    return dateStr;
+  }
+}
+
+// Helper function to calculate nights between dates
+function calculateNights(checkin, checkout) {
+  if (!checkin || !checkout) return 1;
+  try {
+    const checkinDate = new Date(checkin);
+    const checkoutDate = new Date(checkout);
+    const diffTime = checkoutDate - checkinDate;
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    return Math.max(1, diffDays);
+  } catch (e) {
+    return 1;
+  }
 }
 
 function getCurrentDateString() {
