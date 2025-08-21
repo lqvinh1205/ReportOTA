@@ -604,11 +604,11 @@ function generateReportText(bookings, allRoomNumbers = null) {
       const checkoutDate = dayjs(booking.checkoutDate, "DD/MM/YYYY");
       const nights = Math.max(1, checkoutDate.diff(checkinDate, "day"));
 
-      const roomInfo = `P${roomNumber} - ${booking.guestName || ""} - checkin ${
-        booking.checkinDate || ""
-      } checkout ${booking.checkoutDate || ""} - ${nights} đêm - ${
-        booking.source || ""
-      }: ${booking.totalAmount || "0"}`;
+      const roomInfo = `P${roomNumber} - ${
+        booking.guestName || ""
+      } - ${nights} đêm - ${booking.source || ""} ${getTextPayment(booking.source)} ${
+        booking.totalAmount || "0"
+      }`;
       arriving.push(roomInfo);
       occupiedRooms.add(roomNumber);
     }
@@ -670,6 +670,20 @@ function generateReportText(bookings, allRoomNumbers = null) {
   }
 
   return reportText;
+}
+
+function getTextPayment(source) {
+  const config = {
+    "Booking.com": "thu khách",
+    "Khách lẻ": "thu khách",
+    Ctrip: "đã thanh toán",
+    DayLaDau: "đã thanh toán",
+    Expedia: "đã thanh toán",
+    Agoda: "đã thanh toán",
+    Go2Joy: "đã thanh toán",
+    "Airbnb XML": "đã thanh toán",
+  };
+  return config[source] || "đã thanh toán";
 }
 
 //1N1K - 450, unassign -> 450, unassign
