@@ -606,7 +606,7 @@ function generateReportText(bookings, allRoomNumbers = null) {
 
       const roomInfo = `P${roomNumber} - ${
         booking.guestName || ""
-      } - ${nights} đêm - ${booking.source || ""} ${getTextPayment(booking.source)} ${
+      } - ${nights} đêm - ${getTextPayment(booking.source)} ${
         booking.totalAmount || "0"
       }`;
       arriving.push(roomInfo);
@@ -676,14 +676,14 @@ function getTextPayment(source) {
   const config = {
     "Booking.com": "thu khách",
     "Khách lẻ": "thu khách",
-    Ctrip: "đã thanh toán",
-    DayLaDau: "đã thanh toán",
-    Expedia: "đã thanh toán",
-    Agoda: "đã thanh toán",
-    Go2Joy: "đã thanh toán",
-    "Airbnb XML": "đã thanh toán",
+    Ctrip: `${source} đã thanh toán`,
+    DayLaDau: `${source} đã thanh toán`,
+    Expedia: `${source} đã thanh toán`,
+    Agoda: `${source} đã thanh toán`,
+    Go2Joy: `${source} đã thanh toán`,
+    "Airbnb XML": `${source} đã thanh toán`,
   };
-  return config[source] || "đã thanh toán";
+  return config[source] || `${source} đã thanh toán`;
 }
 
 //1N1K - 450, unassign -> 450, unassign
