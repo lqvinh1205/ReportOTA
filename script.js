@@ -581,6 +581,7 @@ function generateReportText(bookings, allRoomNumbers = null) {
 
   // Get all occupied room numbers
   const occupiedRooms = new Set();
+  const arrivingRoomNumbers = new Set(); // track arriving room numbers to avoid duplicates in staying
 
   bookings.forEach((booking) => {
     const roomNumber = convertBookingRoomName(booking.room) || "Unassigned";
@@ -611,8 +612,23 @@ function generateReportText(bookings, allRoomNumbers = null) {
       }`;
       arriving.push(roomInfo);
       occupiedRooms.add(roomNumber);
+      arrivingRoomNumbers.add(String(roomNumber));
     }
   });
+
+  // Remove staying rooms that also appear in arriving
+  if (arrivingRoomNumbers.size > 0 && staying.length > 0) {
+    const originalStayingCount = staying.length;
+    const filtered = staying.filter((r) => !arrivingRoomNumbers.has(String(r)));
+    // replace staying contents with filtered list
+    staying.length = 0;
+    staying.push(...filtered);
+    console.log(
+      `🔁 Removed ${
+        originalStayingCount - filtered.length
+      } duplicate staying rooms overlapping arriving`
+    );
+  }
 
   // Calculate vacant rooms using room list from server (if available)
   if (allRoomNumbers && Array.isArray(allRoomNumbers)) {
