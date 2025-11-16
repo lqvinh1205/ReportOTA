@@ -604,12 +604,17 @@ function generateReportText(bookings, allRoomNumbers = null) {
       const checkinDate = dayjs(booking.checkinDate, "DD/MM/YYYY");
       const checkoutDate = dayjs(booking.checkoutDate, "DD/MM/YYYY");
       const nights = Math.max(1, checkoutDate.diff(checkinDate, "day"));
+      // otaReference
+      const guestName = booking.guestName || "";
+      const paymentText = getTextPayment(booking.source);
+      const code = booking?.otaReference
+        ? `(${booking?.otaReference?.slice(-4)})`
+        : booking?.source != "Go2Joy"
+        ? `(${booking.bookingCode})`
+        : "";
+      const totalAmount = booking.totalAmount || "0";
 
-      const roomInfo = `P${roomNumber} - ${
-        booking.guestName || ""
-      } - ${nights} đêm - ${getTextPayment(booking.source)} ${
-        booking.totalAmount || "0"
-      }`;
+      const roomInfo = `P${roomNumber} - ${guestName} ${code} - ${nights} đêm - ${paymentText} ${totalAmount}`;
       arriving.push(roomInfo);
       occupiedRooms.add(roomNumber);
       arrivingRoomNumbers.add(String(roomNumber));
