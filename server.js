@@ -4,11 +4,21 @@ const cors = require("cors");
 const { URLSearchParams } = require("url");
 const dayjs = require("dayjs");
 
-const app = express();
-const PORT = 3001;
+// Load environment variables
+require('dotenv').config();
 
-// Enable CORS for all origins
-app.use(cors());
+const app = express();
+const PORT = process.env.PORT || 3001;
+const HOST = process.env.HOST || '0.0.0.0';
+
+// Configure CORS - Allow all origins if CORS_ORIGINS is 'all'
+const corsOptions = {
+  origin: process.env.CORS_ORIGINS === 'all' ? true : 
+          (process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : true),
+  credentials: true
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -764,7 +774,12 @@ app.post("/api/login-and-fetch-facility", async (req, res) => {
   }
 });
 
-// Health check endpoint
+// Simple health check endpoint for Docker
+app.get("/health", (req, res) => {
+  res.status(200).send("OK");
+});
+
+// Detailed health check endpoint
 app.get("/api/health", (req, res) => {
   res.json({
     status: "OK",
@@ -1109,9 +1124,10 @@ function extractCalendarOptionData(html) {
 }
 
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, HOST, () => {
   console.log("🚀 OTA Report Server started successfully!");
-  console.log(`📡 Server running at: http://localhost:${PORT}`);
+  console.log(`📡 Server running at: http://${HOST}:${PORT}`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log("📋 Available endpoints:");
   console.log("   GET  /api/health                    - Health check");
   console.log("   POST /api/login                     - Login to OTA system");

@@ -1,0 +1,46 @@
+# Node modules
+node_modules
+npm-debug.log
+yarn-error.log
+package-lock.json
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env.local
+.env.*.local
+
+# Logs
+logs
+*.log
+
+# Build outputs
+dist
+build
+
+# Temporary files
+*.tmp
+temp
+tmp
+
+# Documentation (optional - remove if you want to include)
+README.md
+docs/
+
+# Scripts not needed in production
+*.sh
+!start.sh

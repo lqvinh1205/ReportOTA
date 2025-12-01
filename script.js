@@ -1,6 +1,6 @@
 // ===== CORE BOOKING DATA FETCHING LOGIC =====
-// Node.js server endpoints
-const SERVER_BASE_URL = "http://localhost:3001";
+// Node.js server endpoints - Auto detect based on current location
+const SERVER_BASE_URL = window.location.protocol + "//" + window.location.host;
 
 // ===== MAIN FETCH FUNCTIONS =====
 
