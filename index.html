@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JavaScript UI Demo</title>
+    <title>ReportOTA - Booking Report System</title>
     <link rel="stylesheet" href="styles.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
@@ -12,8 +12,8 @@
 <body>
     <div class="container">
         <header class="header">
-            <h1>JavaScript UI Demo</h1>
-            <p>Interactive components showcase</p>
+            <h1>ReportOTA</h1>
+            <p>OTA Booking Report System</p>
         </header>
 
         <main class="main-content">
@@ -55,129 +55,10 @@
                     </div>
                 </div>
             </section>
-
-            <!-- Card Demo -->
-            <section class="demo-section">
-                <h2>Interactive Cards</h2>
-                <div class="cards-container">
-                    <div class="card" data-card="1">
-                        <div class="card-header">
-                            <h3>Feature 1</h3>
-                            <span class="card-icon">🚀</span>
-                        </div>
-                        <p class="card-description">Modern JavaScript with ES6+ features</p>
-                        <button class="card-button" onclick="toggleCard(1)">Learn More</button>
-                        <div class="card-details">
-                            <p>Explore the latest JavaScript features including arrow functions, destructuring, modules,
-                                and async/await.</p>
-                        </div>
-                    </div>
-
-                    <div class="card" data-card="2">
-                        <div class="card-header">
-                            <h3>Feature 2</h3>
-                            <span class="card-icon">🎨</span>
-                        </div>
-                        <p class="card-description">Responsive UI Design</p>
-                        <button class="card-button" onclick="toggleCard(2)">Learn More</button>
-                        <div class="card-details">
-                            <p>Beautiful, responsive designs that work across all devices with modern CSS Grid and
-                                Flexbox.</p>
-                        </div>
-                    </div>
-
-                    <div class="card" data-card="3">
-                        <div class="card-header">
-                            <h3>Feature 3</h3>
-                            <span class="card-icon">⚡</span>
-                        </div>
-                        <p class="card-description">Performance Optimized</p>
-                        <button class="card-button" onclick="toggleCard(3)">Learn More</button>
-                        <div class="card-details">
-                            <p>Optimized for speed with lazy loading, efficient DOM manipulation, and minimal bundle
-                                size.</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Interactive Form Demo -->
-            <section class="demo-section">
-                <h2>Dynamic Form</h2>
-                <div class="form-container">
-                    <form id="demoForm" class="demo-form">
-                        <div class="form-group">
-                            <label for="name">Name:</label>
-                            <input type="text" id="name" name="name" placeholder="Enter your name" required>
-                            <span class="validation-message"></span>
-                        </div>
-
-                        <div class="form-group">
-                            <label for="email">Email:</label>
-                            <input type="email" id="email" name="email" placeholder="Enter your email" required>
-                            <span class="validation-message"></span>
-                        </div>
-
-                        <div class="form-group">
-                            <label for="theme">Choose Theme:</label>
-                            <select id="theme" name="theme" onchange="changeTheme(this.value)">
-                                <option value="light">Light Theme</option>
-                                <option value="dark">Dark Theme</option>
-                                <option value="blue">Blue Theme</option>
-                            </select>
-                        </div>
-
-                        <div class="form-group">
-                            <label>
-                                <input type="checkbox" id="notifications" name="notifications">
-                                Enable notifications
-                            </label>
-                        </div>
-
-                        <button type="submit" class="submit-button">Submit</button>
-                    </form>
-
-                    <div id="formOutput" class="form-output"></div>
-                </div>
-            </section>
-
-            <!-- Interactive Counter Demo -->
-            <section class="demo-section">
-                <h2>Interactive Counter</h2>
-                <div class="counter-container">
-                    <div class="counter-display">
-                        <span id="counterValue">0</span>
-                    </div>
-                    <div class="counter-controls">
-                        <button class="counter-btn" onclick="updateCounter(-1)">-</button>
-                        <button class="counter-btn" onclick="resetCounter()">Reset</button>
-                        <button class="counter-btn" onclick="updateCounter(1)">+</button>
-                    </div>
-                    <div class="counter-info">
-                        <p>Click count: <span id="clickCount">0</span></p>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Dynamic List Demo -->
-            <section class="demo-section">
-                <h2>Dynamic Todo List</h2>
-                <div class="todo-container">
-                    <div class="todo-input-container">
-                        <input type="text" id="todoInput" placeholder="Add a new task..." class="todo-input">
-                        <button onclick="addTodo()" class="add-button">Add</button>
-                    </div>
-                    <ul id="todoList" class="todo-list"></ul>
-                    <div class="todo-stats">
-                        <span>Total: <span id="totalTasks">0</span></span>
-                        <span>Completed: <span id="completedTasks">0</span></span>
-                    </div>
-                </div>
-            </section>
         </main>
 
         <footer class="footer">
-            <p>&copy; 2025 JavaScript UI Demo. Built with vanilla JavaScript, HTML5, and CSS3.</p>
+            <p>&copy; 2025 ReportOTA. OTA Booking Report Management System.</p>
         </footer>
     </div>
 
