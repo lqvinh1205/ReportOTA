@@ -27,6 +27,8 @@ async function fetchReportViaServer() {
         },
         body: JSON.stringify({
           facilityId: facilityId,
+          fromDate: dayjs().format("YYYY-MM-DD"),
+          toDate: dayjs().format("YYYY-MM-DD"),
         }),
       }
     );
