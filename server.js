@@ -5,17 +5,21 @@ const { URLSearchParams } = require("url");
 const dayjs = require("dayjs");
 
 // Load environment variables
-require('dotenv').config();
+require("dotenv").config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const HOST = process.env.HOST || '0.0.0.0';
+const HOST = process.env.HOST || "0.0.0.0";
 
 // Configure CORS - Allow all origins if CORS_ORIGINS is 'all'
 const corsOptions = {
-  origin: process.env.CORS_ORIGINS === 'all' ? true : 
-          (process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : true),
-  credentials: true
+  origin:
+    process.env.CORS_ORIGINS === "all"
+      ? true
+      : process.env.CORS_ORIGINS
+      ? process.env.CORS_ORIGINS.split(",")
+      : true,
+  credentials: true,
 };
 
 app.use(cors(corsOptions));
@@ -257,6 +261,12 @@ const facilities = {
     email: "ota.eraapartment4@gmail.com",
     password: "123456",
     roomTypes: [10559],
+  },
+  era_apartment_4: {
+    name: "Era TRẦN VĂN LAI",
+    email: "ota.eraapartment4@gmail.com",
+    password: "123456",
+    roomTypes: [12906, 12907],
   },
 };
 
@@ -1127,7 +1137,7 @@ function extractCalendarOptionData(html) {
 app.listen(PORT, HOST, () => {
   console.log("🚀 OTA Report Server started successfully!");
   console.log(`📡 Server running at: http://${HOST}:${PORT}`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`);
   console.log("📋 Available endpoints:");
   console.log("   GET  /api/health                    - Health check");
   console.log("   POST /api/login                     - Login to OTA system");
