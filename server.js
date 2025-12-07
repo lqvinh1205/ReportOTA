@@ -908,6 +908,168 @@ app.post("/api/list-rooms", async (req, res) => {
   }
 });
 
+// New endpoint: Revenue report with date range
+app.post("/api/revenue-report", async (req, res) => {
+  try {
+    const { facilityId, fromDate, toDate } = req.body;
+
+    if (!facilityId || !facilities[facilityId]) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid facility ID",
+        availableFacilities: Object.keys(facilities),
+      });
+    }
+
+    if (!fromDate || !toDate) {
+      return res.status(400).json({
+        success: false,
+        error: "fromDate and toDate are required (format: DD/MM/YYYY)",
+      });
+    }
+
+    const facility = facilities[facilityId];
+    console.log(
+      `💰 Generating revenue report for facility: ${facility.name} (${fromDate} - ${toDate})`
+    );
+
+    // Login
+    await performLogin(facility.email, facility.password);
+
+    // Fetch bookings for the date range with TypeSeachDate=0 (check-in/arrival)
+    const searchTypes = [
+      { name: "Phòng đến", typeSeachDate: 0, description: "Check-in" },
+    ];
+
+    let allBookings = [];
+
+    for (const roomType of facility.roomTypes) {
+      for (const searchType of searchTypes) {
+        let currentPage = 1;
+        let totalPages = 1;
+
+        do {
+          const pageParams = {
+            TypeSeachDate: searchType.typeSeachDate,
+            FromDate: fromDate,
+            ToDate: toDate,
+            RoomType: roomType,
+            RoomDetail: "",
+            SourceType: "",
+            Source: "",
+            Status: "1,0,3,4,2",
+            Seach: "",
+            IsExtensionFilder: true,
+            p: currentPage,
+          };
+
+          console.log('pageParams', pageParams)
+
+          const queryString = new URLSearchParams(pageParams).toString();
+          const reportUrl = `${reservationPath}?${queryString}`;
+
+          const reportResponse = await axios.get(reportUrl, {
+            headers: {
+              "User-Agent":
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+              Accept:
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+              "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
+              "Cache-Control": "no-cache",
+              Referer: `${baseUrl}/`,
+              Cookie: sessionCookies,
+            },
+            maxRedirects: 5,
+          });
+
+          const parsedData = parseBookingData(reportResponse.data);
+
+          if (parsedData.success) {
+            totalPages = parsedData.totalPages;
+
+            // Add bookings with metadata
+            const bookingsWithMeta = parsedData.bookings.map((booking) => ({
+              ...booking,
+              typeSeachDate: searchType.typeSeachDate,
+              searchType: searchType.name,
+              roomType: roomType,
+            }));
+
+            allBookings = allBookings.concat(bookingsWithMeta);
+
+            console.log(
+              `  📄 Page ${currentPage}/${totalPages}: ${parsedData.bookings.length} bookings`
+            );
+          }
+
+          currentPage++;
+        } while (currentPage <= totalPages);
+      }
+    }
+
+    console.log(`✅ Total bookings fetched: ${allBookings.length}`);
+
+    // Sort bookings by check-in date
+    allBookings.sort((a, b) => {
+      const dateA = dayjs(a.checkinDate, "DD/MM/YYYY");
+      const dateB = dayjs(b.checkinDate, "DD/MM/YYYY");
+      return dateA.diff(dateB);
+    });
+
+    console.log(`✅ Bookings sorted by check-in date`);
+
+    // Group bookings by OTA source
+    const revenueByOTA = {};
+    let totalRevenue = 0;
+
+    allBookings.forEach((booking) => {
+      const source = booking.source || "Khách lẻ";
+      const totalAmount = parseFloat(
+        booking.totalAmount.replace(/[^\d.-]/g, "") || 0
+      );
+
+      if (!revenueByOTA[source]) {
+        revenueByOTA[source] = {
+          source: source,
+          totalBookings: 0,
+          totalRevenue: 0,
+          bookings: [],
+        };
+      }
+
+      revenueByOTA[source].totalBookings++;
+      revenueByOTA[source].totalRevenue += totalAmount;
+      revenueByOTA[source].bookings.push(booking);
+      totalRevenue += totalAmount;
+    });
+
+    res.json({
+      success: true,
+      facility: {
+        id: facilityId,
+        name: facility.name,
+      },
+      dateRange: {
+        from: fromDate,
+        to: toDate,
+      },
+      summary: {
+        totalBookings: allBookings.length,
+        totalRevenue: totalRevenue,
+      },
+      revenueByOTA: Object.values(revenueByOTA),
+      bookings: allBookings,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("❌ Revenue report error:", error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
 // Helper function to parse booking data from HTML
 function parseBookingData(html) {
   try {

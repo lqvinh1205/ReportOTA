@@ -36,8 +36,24 @@
                             </select>
                         </div>
 
+                        <div class="form-group" style="margin-bottom: 15px; display: flex; gap: 10px;">
+                            <div style="flex: 1;">
+                                <label for="fromDate">Từ ngày:</label>
+                                <input type="date" id="fromDate" 
+                                    style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                            </div>
+                            <div style="flex: 1;">
+                                <label for="toDate">Đến ngày:</label>
+                                <input type="date" id="toDate" 
+                                    style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                            </div>
+                        </div>
+
                         <button class="api-btn server" onclick="fetchReportViaServer()">
                             🖥️ Fetch via Node.js Server
+                        </button>
+                        <button class="api-btn success" onclick="generateRevenueReport()">
+                            💰 Xuất Báo Cáo Doanh Thu
                         </button>
                         <button class="api-btn info" onclick="checkServerHealth()">
                             🏥 Check Server Health

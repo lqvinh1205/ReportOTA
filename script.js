@@ -909,6 +909,12 @@ let facilities = [];
 // Load facilities when page loads
 document.addEventListener("DOMContentLoaded", async () => {
   await loadFacilities();
+  
+  // Set default date range to current day
+  const today = new Date();
+  
+  document.getElementById("fromDate").valueAsDate = today;
+  document.getElementById("toDate").valueAsDate = today;
 });
 
 // Load facilities from server
@@ -1306,6 +1312,334 @@ function getBookingStyles() {
             }
         </style>
     `;
+}
+
+// ===== REVENUE REPORT FUNCTIONS =====
+
+// Generate revenue report with date range
+async function generateRevenueReport() {
+  const facilityId = document.getElementById("facilitySelect").value;
+  const fromDateInput = document.getElementById("fromDate").value;
+  const toDateInput = document.getElementById("toDate").value;
+
+  if (!facilityId) {
+    showNotification("Vui lòng chọn cơ sở trước!", "warning");
+    return;
+  }
+
+  if (!fromDateInput || !toDateInput) {
+    showNotification("Vui lòng chọn khoảng thời gian!", "warning");
+    return;
+  }
+
+  // Convert from YYYY-MM-DD to DD/MM/YYYY
+  const fromDate = convertToVNDate(fromDateInput);
+  const toDate = convertToVNDate(toDateInput);
+
+  updateApiStatus("pending", "Đang tạo báo cáo doanh thu...");
+  showNotification("Đang fetch dữ liệu doanh thu...", "info");
+
+  try {
+    console.log("💰 Generating revenue report...", {
+      facilityId,
+      fromDate,
+      toDate,
+    });
+
+    const response = await fetch(`${SERVER_BASE_URL}/api/revenue-report`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        facilityId: facilityId,
+        fromDate: fromDate,
+        toDate: toDate,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Server error: ${response.status}`);
+    }
+
+    const result = await response.json();
+
+    if (result.success) {
+      console.log("✅ Revenue report generated:", result);
+
+      // Store globally for export
+      window.lastRevenueReport = result;
+
+      // Show export popup directly without display
+      showRevenueExportPopup(result);
+
+      updateApiStatus(
+        "success",
+        `✅ Báo cáo doanh thu: ${result.summary.totalBookings} bookings, ${formatCurrency(
+          result.summary.totalRevenue
+        )} VND`
+      );
+      showNotification("Báo cáo doanh thu đã sẵn sàng!", "success");
+    } else {
+      throw new Error(result.error || "Failed to generate revenue report");
+    }
+  } catch (error) {
+    console.error("❌ Revenue report error:", error);
+    updateApiStatus("error", `Error: ${error.message}`);
+    showNotification(`Error: ${error.message}`, "error");
+  }
+}
+
+// Convert YYYY-MM-DD to DD/MM/YYYY
+function convertToVNDate(dateString) {
+  const [year, month, day] = dateString.split("-");
+  return `${day}/${month}/${year}`;
+}
+
+// Format currency
+function formatCurrency(amount) {
+  return new Intl.NumberFormat("vi-VN").format(Math.round(amount));
+}
+
+// Calculate total nights from bookings
+function calculateTotalNights(bookings) {
+  if (!bookings || bookings.length === 0) return 0;
+
+  dayjs.extend(dayjs_plugin_customParseFormat);
+
+  const totalNights = bookings.reduce((sum, booking) => {
+    const checkinDate = dayjs(booking.checkinDate, "DD/MM/YYYY");
+    const checkoutDate = dayjs(booking.checkoutDate, "DD/MM/YYYY");
+    const nights = Math.max(1, checkoutDate.diff(checkinDate, "day"));
+    return sum + nights;
+  }, 0);
+
+  return totalNights;
+}
+
+// Get OTA source name
+function getOTASourceName(source) {
+  const sourceMap = {
+    "Booking.com": "Booking.com",
+    Agoda: "Agoda",
+    Expedia: "Expedia",
+    "Airbnb XML": "Airbnb",
+    Ctrip: "Ctrip",
+    Go2Joy: "Go2Joy",
+    DayLaDau: "DayLaDau",
+    "Khách lẻ": "Khách lẻ",
+  };
+  return sourceMap[source] || source;
+}
+
+// Show revenue export popup with copyable text
+function showRevenueExportPopup(reportData) {
+  const { facility, dateRange, summary, bookings } = reportData;
+
+  // Generate Excel-formatted text (tab-separated) - No headers
+  // Use all bookings directly (already sorted by backend)
+  let excelText = ``;
+
+  dayjs.extend(dayjs_plugin_customParseFormat);
+  
+  bookings.forEach((booking) => {
+    const checkinDate = dayjs(booking.checkinDate, "DD/MM/YYYY");
+    const checkoutDate = dayjs(booking.checkoutDate, "DD/MM/YYYY");
+    const nights = Math.max(1, checkoutDate.diff(checkinDate, "day"));
+
+    // Format: Ngày(empty) phòng TênKhách NgàyĐến NgàyĐi TổngSốĐêm Đơngiá TổngTiền HH(empty) ThựcThu NGUỒN
+    excelText += `\t${booking.room}\t${booking.guestName}\t${booking.checkinDate}\t${booking.checkoutDate}\t${nights}\t\t${booking.totalAmount}\t\t${booking.totalAmount}\t${getOTASourceName(booking.source)}\n`;
+  });
+
+  // Remove existing popup
+  const existingPopup = document.getElementById("revenue-export-popup");
+  if (existingPopup) {
+    existingPopup.remove();
+  }
+
+  // Create popup
+  const popup = document.createElement("div");
+  popup.id = "revenue-export-popup";
+  popup.style.cssText = `
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: white;
+    border: 2px solid #ccc;
+    border-radius: 8px;
+    padding: 20px;
+    width: 90vw;
+    max-width: 1200px;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    z-index: 1000;
+    font-family: monospace;
+  `;
+
+  popup.innerHTML = `
+    <div style="margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
+      <h3 style="margin: 0; color: #333;">💰 Báo Cáo Doanh Thu - ${
+        facility.name
+      }</h3>
+      <button onclick="closeRevenueExportPopup()" style="background: #ff5252; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer;">✕</button>
+    </div>
+    
+    <div style="margin-bottom: 10px; padding: 10px; background: #e3f2fd; border-radius: 4px;">
+      <p style="margin: 5px 0;"><strong>Kỳ báo cáo:</strong> ${dateRange.from} - ${
+    dateRange.to
+  }</p>
+      <p style="margin: 5px 0;"><strong>Tổng booking:</strong> ${
+        summary.totalBookings
+      } | <strong>Tổng doanh thu:</strong> ${formatCurrency(
+    summary.totalRevenue
+  )} VND</p>
+      <p style="margin: 5px 0; color: #d32f2f;"><strong>📋 Hướng dẫn:</strong> Copy text bên dưới và paste vào Excel (Ctrl+V). Dữ liệu sẽ tự động phân chia vào các cột.</p>
+    </div>
+    
+    <textarea id="revenueTextArea" readonly style="
+      width: 100%;
+      height: 400px;
+      font-family: monospace;
+      font-size: 12px;
+      line-height: 1.4;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      resize: vertical;
+      background: #f9f9f9;
+    ">${excelText}</textarea>
+    
+    <div style="margin-top: 15px; text-align: center;">
+      <button onclick="copyRevenueText()" style="
+        background: #4CAF50;
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 4px;
+        cursor: pointer;
+        margin-right: 10px;
+        font-size: 14px;
+      ">📋 Copy Text</button>
+      
+      <button onclick="downloadRevenueCSV()" style="
+        background: #2196F3;
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 4px;
+        cursor: pointer;
+        margin-right: 10px;
+        font-size: 14px;
+      ">💾 Download CSV</button>
+      
+      <button onclick="closeRevenueExportPopup()" style="
+        background: #666;
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+      ">Đóng</button>
+    </div>
+  `;
+
+  // Add overlay
+  const overlay = document.createElement("div");
+  overlay.id = "revenue-overlay";
+  overlay.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.5);
+    z-index: 999;
+  `;
+  overlay.onclick = closeRevenueExportPopup;
+
+  document.body.appendChild(overlay);
+  document.body.appendChild(popup);
+
+  // Auto-select text for easy copying
+  document.getElementById("revenueTextArea").focus();
+  document.getElementById("revenueTextArea").select();
+}
+
+// Close revenue export popup
+function closeRevenueExportPopup() {
+  const popup = document.getElementById("revenue-export-popup");
+  const overlay = document.getElementById("revenue-overlay");
+  if (popup) popup.remove();
+  if (overlay) overlay.remove();
+}
+
+// Copy revenue text to clipboard
+function copyRevenueText() {
+  const textArea = document.getElementById("revenueTextArea");
+  if (textArea) {
+    textArea.select();
+    textArea.setSelectionRange(0, 99999);
+
+    try {
+      document.execCommand("copy");
+      showNotification(
+        "✅ Đã copy báo cáo! Paste vào Excel (Ctrl+V)",
+        "success"
+      );
+    } catch (err) {
+      navigator.clipboard
+        .writeText(textArea.value)
+        .then(() => {
+          showNotification(
+            "✅ Đã copy báo cáo! Paste vào Excel (Ctrl+V)",
+            "success"
+          );
+        })
+        .catch(() => {
+          showNotification("Lỗi khi copy. Vui lòng copy thủ công.", "error");
+        });
+    }
+  }
+}
+
+// Download revenue as CSV
+function downloadRevenueCSV() {
+  const textArea = document.getElementById("revenueTextArea");
+  if (!textArea) return;
+
+  const csvContent = textArea.value;
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const link = document.createElement("a");
+  const url = URL.createObjectURL(blob);
+
+  const facilityName =
+    window.lastRevenueReport?.facility?.name || "revenue_report";
+  const dateRange = window.lastRevenueReport?.dateRange || {};
+  const fileName = `${facilityName}_${dateRange.from?.replace(
+    /\//g,
+    "-"
+  )}_${dateRange.to?.replace(/\//g, "-")}.csv`;
+
+  link.setAttribute("href", url);
+  link.setAttribute("download", fileName);
+  link.style.visibility = "hidden";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+
+  showNotification("✅ Đã tải file CSV!", "success");
+}
+
+// Export revenue to Excel (wrapper function)
+function exportRevenueToExcel() {
+  if (window.lastRevenueReport) {
+    showRevenueExportPopup(window.lastRevenueReport);
+  } else {
+    showNotification("Vui lòng tạo báo cáo doanh thu trước!", "warning");
+  }
 }
 
 // ===== INITIALIZATION =====
