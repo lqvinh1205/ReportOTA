@@ -3,6 +3,14 @@ const axios = require("axios");
 const cors = require("cors");
 const { URLSearchParams } = require("url");
 const dayjs = require("dayjs");
+const bcrypt = require("bcrypt");
+const {
+  authenticateToken,
+  checkFacilityAccess,
+  generateToken,
+  loadUsers,
+  loadFacilities,
+} = require("./middleware/auth");
 
 // Load environment variables
 require("dotenv").config();
@@ -229,40 +237,122 @@ app.get("/api/report", async (req, res) => {
   }
 });
 
-// Facility and RoomType configuration
-const facilities = {
-  era_apartment_1: {
-    name: "Era Cát Linh",
-    email: process.env.OTA_EMAIL,
-    password: process.env.OTA_PASSWORD,
-    roomTypes: [11246, 11247],
-  },
-  era_apartment_2: {
-    name: "Era 158 Nguyễn Khánh Toàn",
-    email: process.env.OTA_EMAIL,
-    password: process.env.OTA_PASSWORD,
-    roomTypes: [11248, 11249, 11423, 11424],
-  },
-  era_apartment_3: {
-    name: "Era 58 Nguyễn Khánh Toàn",
-    email: process.env.OTA_EMAIL,
-    password: process.env.OTA_PASSWORD,
-    roomTypes: [10559],
-  },
-  era_apartment_4: {
-    name: "Era TRẦN VĂN LAI",
-    email: process.env.OTA_EMAIL,
-    password: process.env.OTA_PASSWORD,
-    roomTypes: [12906, 12907],
-  },
-};
+// Facility and RoomType configuration - Load from config file
+const facilities = loadFacilities();
 
-// Get facilities endpoint
-app.get("/api/facilities", (req, res) => {
-  const facilitiesInfo = Object.keys(facilities).map((key) => ({
+// ===== AUTHENTICATION ENDPOINTS =====
+
+// User login endpoint
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({
+        success: false,
+        error: "Username and password required",
+      });
+    }
+
+    // Load users
+    const users = loadUsers();
+    const user = users.find((u) => u.username === username && u.active);
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        error: "Invalid credentials",
+        code: "INVALID_CREDENTIALS",
+      });
+    }
+
+    // Verify password
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) {
+      return res.status(401).json({
+        success: false,
+        error: "Invalid credentials",
+        code: "INVALID_CREDENTIALS",
+      });
+    }
+
+    // Generate token
+    const token = generateToken(user);
+
+    // Get user facilities
+    const userFacilities = user.facilities.map((facilityId) => ({
+      id: facilityId,
+      name: facilities[facilityId]?.name || facilityId,
+      roomTypes: facilities[facilityId]?.roomTypes || [],
+    }));
+
+    res.json({
+      success: true,
+      token: token,
+      user: {
+        id: user.id,
+        username: user.username,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        facilities: userFacilities,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Login error:", error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+// Verify token endpoint
+app.get("/api/auth/verify", authenticateToken, (req, res) => {
+  const userFacilities = req.user.facilities.map((facilityId) => ({
+    id: facilityId,
+    name: facilities[facilityId]?.name || facilityId,
+    roomTypes: facilities[facilityId]?.roomTypes || [],
+  }));
+
+  res.json({
+    success: true,
+    user: {
+      ...req.user,
+      facilities: userFacilities,
+    },
+  });
+});
+
+// Get user profile
+app.get("/api/auth/profile", authenticateToken, (req, res) => {
+  res.json({
+    success: true,
+    user: req.user,
+  });
+});
+
+// ===== END AUTHENTICATION ENDPOINTS =====
+
+// Get facilities endpoint - Now requires authentication
+app.get("/api/facilities", authenticateToken, (req, res) => {
+  // Filter facilities based on user's access
+  const userFacilityIds = req.user.facilities || [];
+
+  let accessibleFacilities;
+  if (req.user.role === "admin") {
+    // Admin can see all facilities
+    accessibleFacilities = Object.keys(facilities);
+  } else {
+    // Other users can only see their assigned facilities
+    accessibleFacilities = userFacilityIds;
+  }
+
+  const facilitiesInfo = accessibleFacilities.map((key) => ({
     id: key,
-    name: facilities[key].name,
-    roomTypes: facilities[key].roomTypes,
+    name: facilities[key]?.name || key,
+    roomTypes: facilities[key]?.roomTypes || [],
+    address: facilities[key]?.address || "",
   }));
 
   res.json({
@@ -532,244 +622,253 @@ app.post("/api/login-and-fetch", async (req, res) => {
 });
 
 // Combined login and fetch endpoint with facility support
-app.post("/api/login-and-fetch-facility", async (req, res) => {
-  try {
-    const { facilityId, fromDate, toDate } = req.body;
+app.post(
+  "/api/login-and-fetch-facility",
+  authenticateToken,
+  checkFacilityAccess,
+  async (req, res) => {
+    try {
+      const { facilityId, fromDate, toDate } = req.body;
 
-    if (!facilityId || !facilities[facilityId]) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid facility ID",
-        availableFacilities: Object.keys(facilities),
-      });
-    }
-
-    const facility = facilities[facilityId];
-    console.log(
-      `🏢 Starting comprehensive fetch for facility: ${facility.name}`
-    );
-
-    // Use facility credentials for login
-    const loginPageResponse = await axios.get(loginPath, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
-        "Cache-Control": "no-cache",
-      },
-    });
-
-    sessionCookies = extractCookies(loginPageResponse);
-
-    const loginPageHtml = loginPageResponse.data;
-    const viewStateMatch =
-      loginPageHtml.match(/__VIEWSTATE[^>]*value="([^"]*)"/) || [];
-    const viewStateGeneratorMatch =
-      loginPageHtml.match(/__VIEWSTATEGENERATOR[^>]*value="([^"]*)"/) || [];
-    const eventValidationMatch =
-      loginPageHtml.match(/__EVENTVALIDATION[^>]*value="([^"]*)"/) || [];
-
-    const viewState = viewStateMatch[1] || "";
-    const viewStateGenerator = viewStateGeneratorMatch[1] || "";
-    const eventValidation = eventValidationMatch[1] || "";
-
-    const loginData = new URLSearchParams({
-      __EVENTTARGET: "lkLogin",
-      __EVENTARGUMENT: "",
-      __VIEWSTATE: viewState,
-      __VIEWSTATEGENERATOR: viewStateGenerator,
-      __EVENTVALIDATION: eventValidation,
-      ddlLangCode: "vi-VN",
-      txtEmail: facility.email,
-      txtPassword: facility.password,
-    });
-
-    const loginResponse = await axios.post(loginPath, loginData.toString(), {
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent":
-          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
-        "Cache-Control": "no-cache",
-        Origin: baseUrl,
-        Referer: loginPath,
-        Cookie: sessionCookies,
-      },
-      maxRedirects: 0,
-      validateStatus: function (status) {
-        return status >= 200 && status < 400;
-      },
-    });
-
-    const newCookies = extractCookies(loginResponse);
-    if (newCookies) {
-      sessionCookies = newCookies;
-    }
-
-    console.log("✅ Login successful for facility:", facility.name);
-
-    // Define search types
-    const searchTypes = [
-      { name: "Phòng đến", typeSeachDate: 0, description: "Check-in today" },
-      { name: "Phòng đi", typeSeachDate: 1, description: "Check-out today" },
-      { name: "Phòng lưu", typeSeachDate: 3, description: "Currently staying" },
-    ];
-
-    let allBookings = [];
-    let fetchSummary = {
-      facility: facility.name,
-      facilityId: facilityId,
-      totalBookings: 0,
-      totalRoomTypes: facility.roomTypes.length,
-      totalSearchTypes: searchTypes.length,
-      roomTypeSummary: [],
-    };
-
-    // Fetch data for each room type and search type combination
-    for (const roomType of facility.roomTypes) {
-      console.log(`\n🏠 Processing RoomType: ${roomType}`);
-
-      let roomTypeBookings = [];
-      let roomTypeSummary = {
-        roomType: roomType,
-        totalBookings: 0,
-        searchTypes: [],
-      };
-
-      for (const searchType of searchTypes) {
-        console.log(`  🔍 ${searchType.name} for RoomType ${roomType}...`);
-
-        let typeBookings = [];
-        let currentPage = 1;
-        let totalPages = 1;
-        let fetchedPages = 0;
-
-        do {
-          const pageParams = {
-            TypeSeachDate: searchType.typeSeachDate,
-            FromDate: fromDate,
-            ToDate: toDate,
-            RoomType: roomType,
-            RoomDetail: "",
-            SourceType: "",
-            Source: "",
-            Status: "1,0,3,4,2",
-            Seach: "",
-            IsExtensionFilder: true,
-            p: currentPage,
-          };
-
-          const queryString = new URLSearchParams(pageParams).toString();
-          const reportUrl = `${reservationPath}?${queryString}`;
-
-          const reportResponse = await axios.get(reportUrl, {
-            headers: {
-              "User-Agent":
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-              Accept:
-                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-              "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
-              "Cache-Control": "no-cache",
-              Referer: `${baseUrl}/`,
-              Cookie: sessionCookies,
-            },
-            maxRedirects: 5,
-          });
-
-          const parsedData = parseBookingData(reportResponse.data);
-
-          if (parsedData.success) {
-            totalPages = parsedData.totalPages;
-
-            const bookingsWithInfo = parsedData.bookings.map((booking) => ({
-              ...booking,
-              facilityId: facilityId,
-              facilityName: facility.name,
-              roomType: roomType,
-              searchType: searchType.name,
-              typeSeachDate: searchType.typeSeachDate,
-            }));
-
-            typeBookings = typeBookings.concat(bookingsWithInfo);
-            fetchedPages++;
-
-            console.log(
-              `    ✅ Page ${currentPage}/${totalPages} - ${parsedData.bookingsOnPage} bookings`
-            );
-
-            if (totalPages === 1) break;
-          } else {
-            console.log(`    ❌ Failed to parse page ${currentPage}`);
-            break;
-          }
-
-          currentPage++;
-
-          if (fetchedPages >= 20) {
-            console.log(`    ⚠️ Reached safety limit of 20 pages`);
-            break;
-          }
-
-          if (currentPage <= totalPages) {
-            await new Promise((resolve) => setTimeout(resolve, 200));
-          }
-        } while (currentPage <= totalPages);
-
-        roomTypeSummary.searchTypes.push({
-          name: searchType.name,
-          typeSeachDate: searchType.typeSeachDate,
-          bookings: typeBookings.length,
-          pages: fetchedPages,
+      if (!facilityId || !facilities[facilityId]) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid facility ID",
+          availableFacilities: Object.keys(facilities),
         });
-
-        roomTypeBookings = roomTypeBookings.concat(typeBookings);
-        console.log(
-          `    🎉 ${searchType.name} completed: ${typeBookings.length} bookings`
-        );
-
-        await new Promise((resolve) => setTimeout(resolve, 300));
       }
 
-      roomTypeSummary.totalBookings = roomTypeBookings.length;
-      fetchSummary.roomTypeSummary.push(roomTypeSummary);
-      allBookings = allBookings.concat(roomTypeBookings);
-
+      const facility = facilities[facilityId];
       console.log(
-        `🏠 RoomType ${roomType} completed: ${roomTypeBookings.length} total bookings`
+        `🏢 Starting comprehensive fetch for facility: ${facility.name}`
       );
 
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      // Use facility credentials for login
+      const loginPageResponse = await axios.get(loginPath, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+          Accept:
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
+          "Cache-Control": "no-cache",
+        },
+      });
+
+      sessionCookies = extractCookies(loginPageResponse);
+
+      const loginPageHtml = loginPageResponse.data;
+      const viewStateMatch =
+        loginPageHtml.match(/__VIEWSTATE[^>]*value="([^"]*)"/) || [];
+      const viewStateGeneratorMatch =
+        loginPageHtml.match(/__VIEWSTATEGENERATOR[^>]*value="([^"]*)"/) || [];
+      const eventValidationMatch =
+        loginPageHtml.match(/__EVENTVALIDATION[^>]*value="([^"]*)"/) || [];
+
+      const viewState = viewStateMatch[1] || "";
+      const viewStateGenerator = viewStateGeneratorMatch[1] || "";
+      const eventValidation = eventValidationMatch[1] || "";
+
+      const loginData = new URLSearchParams({
+        __EVENTTARGET: "lkLogin",
+        __EVENTARGUMENT: "",
+        __VIEWSTATE: viewState,
+        __VIEWSTATEGENERATOR: viewStateGenerator,
+        __EVENTVALIDATION: eventValidation,
+        ddlLangCode: "vi-VN",
+        txtEmail: facility.email,
+        txtPassword: facility.password,
+      });
+
+      const loginResponse = await axios.post(loginPath, loginData.toString(), {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "User-Agent":
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+          Accept:
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
+          "Cache-Control": "no-cache",
+          Origin: baseUrl,
+          Referer: loginPath,
+          Cookie: sessionCookies,
+        },
+        maxRedirects: 0,
+        validateStatus: function (status) {
+          return status >= 200 && status < 400;
+        },
+      });
+
+      const newCookies = extractCookies(loginResponse);
+      if (newCookies) {
+        sessionCookies = newCookies;
+      }
+
+      console.log("✅ Login successful for facility:", facility.name);
+
+      // Define search types
+      const searchTypes = [
+        { name: "Phòng đến", typeSeachDate: 0, description: "Check-in today" },
+        { name: "Phòng đi", typeSeachDate: 1, description: "Check-out today" },
+        {
+          name: "Phòng lưu",
+          typeSeachDate: 3,
+          description: "Currently staying",
+        },
+      ];
+
+      let allBookings = [];
+      let fetchSummary = {
+        facility: facility.name,
+        facilityId: facilityId,
+        totalBookings: 0,
+        totalRoomTypes: facility.roomTypes.length,
+        totalSearchTypes: searchTypes.length,
+        roomTypeSummary: [],
+      };
+
+      // Fetch data for each room type and search type combination
+      for (const roomType of facility.roomTypes) {
+        console.log(`\n🏠 Processing RoomType: ${roomType}`);
+
+        let roomTypeBookings = [];
+        let roomTypeSummary = {
+          roomType: roomType,
+          totalBookings: 0,
+          searchTypes: [],
+        };
+
+        for (const searchType of searchTypes) {
+          console.log(`  🔍 ${searchType.name} for RoomType ${roomType}...`);
+
+          let typeBookings = [];
+          let currentPage = 1;
+          let totalPages = 1;
+          let fetchedPages = 0;
+
+          do {
+            const pageParams = {
+              TypeSeachDate: searchType.typeSeachDate,
+              FromDate: fromDate,
+              ToDate: toDate,
+              RoomType: roomType,
+              RoomDetail: "",
+              SourceType: "",
+              Source: "",
+              Status: "1,0,3,4,2",
+              Seach: "",
+              IsExtensionFilder: true,
+              p: currentPage,
+            };
+
+            const queryString = new URLSearchParams(pageParams).toString();
+            const reportUrl = `${reservationPath}?${queryString}`;
+
+            const reportResponse = await axios.get(reportUrl, {
+              headers: {
+                "User-Agent":
+                  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+                Accept:
+                  "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
+                "Cache-Control": "no-cache",
+                Referer: `${baseUrl}/`,
+                Cookie: sessionCookies,
+              },
+              maxRedirects: 5,
+            });
+
+            const parsedData = parseBookingData(reportResponse.data);
+
+            if (parsedData.success) {
+              totalPages = parsedData.totalPages;
+
+              const bookingsWithInfo = parsedData.bookings.map((booking) => ({
+                ...booking,
+                facilityId: facilityId,
+                facilityName: facility.name,
+                roomType: roomType,
+                searchType: searchType.name,
+                typeSeachDate: searchType.typeSeachDate,
+              }));
+
+              typeBookings = typeBookings.concat(bookingsWithInfo);
+              fetchedPages++;
+
+              console.log(
+                `    ✅ Page ${currentPage}/${totalPages} - ${parsedData.bookingsOnPage} bookings`
+              );
+
+              if (totalPages === 1) break;
+            } else {
+              console.log(`    ❌ Failed to parse page ${currentPage}`);
+              break;
+            }
+
+            currentPage++;
+
+            if (fetchedPages >= 20) {
+              console.log(`    ⚠️ Reached safety limit of 20 pages`);
+              break;
+            }
+
+            if (currentPage <= totalPages) {
+              await new Promise((resolve) => setTimeout(resolve, 200));
+            }
+          } while (currentPage <= totalPages);
+
+          roomTypeSummary.searchTypes.push({
+            name: searchType.name,
+            typeSeachDate: searchType.typeSeachDate,
+            bookings: typeBookings.length,
+            pages: fetchedPages,
+          });
+
+          roomTypeBookings = roomTypeBookings.concat(typeBookings);
+          console.log(
+            `    🎉 ${searchType.name} completed: ${typeBookings.length} bookings`
+          );
+
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        }
+
+        roomTypeSummary.totalBookings = roomTypeBookings.length;
+        fetchSummary.roomTypeSummary.push(roomTypeSummary);
+        allBookings = allBookings.concat(roomTypeBookings);
+
+        console.log(
+          `🏠 RoomType ${roomType} completed: ${roomTypeBookings.length} total bookings`
+        );
+
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+
+      fetchSummary.totalBookings = allBookings.length;
+
+      console.log(`\n🎊 FACILITY FETCH COMPLETED FOR ${facility.name}!`);
+      console.log(`📊 Total bookings: ${allBookings.length}`);
+
+      res.json({
+        success: true,
+        facility: {
+          id: facilityId,
+          name: facility.name,
+          roomTypes: facility.roomTypes,
+        },
+        summary: fetchSummary,
+        totalBookings: allBookings.length,
+        bookings: allBookings,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error("❌ Facility fetch error:", error.message);
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
     }
-
-    fetchSummary.totalBookings = allBookings.length;
-
-    console.log(`\n🎊 FACILITY FETCH COMPLETED FOR ${facility.name}!`);
-    console.log(`📊 Total bookings: ${allBookings.length}`);
-
-    res.json({
-      success: true,
-      facility: {
-        id: facilityId,
-        name: facility.name,
-        roomTypes: facility.roomTypes,
-      },
-      summary: fetchSummary,
-      totalBookings: allBookings.length,
-      bookings: allBookings,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error("❌ Facility fetch error:", error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
   }
-});
+);
 
 // Simple health check endpoint for Docker
 app.get("/health", (req, res) => {
@@ -787,275 +886,288 @@ app.get("/api/health", (req, res) => {
 });
 
 // New API endpoint to get list of rooms for a facility
-app.post("/api/list-rooms", async (req, res) => {
-  try {
-    const { facilityId } = req.body;
+app.post(
+  "/api/list-rooms",
+  authenticateToken,
+  checkFacilityAccess,
+  async (req, res) => {
+    try {
+      const { facilityId } = req.body;
 
-    if (!facilityId || !facilities[facilityId]) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid facility ID",
-        availableFacilities: Object.keys(facilities),
-      });
-    }
-
-    const facility = facilities[facilityId];
-    console.log(`🏠 Getting room list for facility: ${facility.name}`);
-
-    // Login with facility credentials if needed
-    if (!sessionCookies) {
-      console.log("🔐 No session found, logging in...");
-      const loginResult = await performLogin(facility.email, facility.password);
-      if (!loginResult.success) {
-        return res.status(500).json({
+      if (!facilityId || !facilities[facilityId]) {
+        return res.status(400).json({
           success: false,
-          error: "Login failed",
-          details: loginResult.error,
+          error: "Invalid facility ID",
+          availableFacilities: Object.keys(facilities),
         });
       }
-    }
 
-    // Fetch calendar page to get room list
-    const calendarUrl = `${baseUrl}/app/calendar`;
-    console.log("🌐 Fetching calendar page for room list...");
+      const facility = facilities[facilityId];
+      console.log(`🏠 Getting room list for facility: ${facility.name}`);
 
-    const calendarResponse = await axios.get(calendarUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
-        Cookie: sessionCookies,
-        "Cache-Control": "no-cache",
-      },
-    });
+      // Login with facility credentials if needed
+      if (!sessionCookies) {
+        console.log("🔐 No session found, logging in...");
+        const loginResult = await performLogin(
+          facility.email,
+          facility.password
+        );
+        if (!loginResult.success) {
+          return res.status(500).json({
+            success: false,
+            error: "Login failed",
+            details: loginResult.error,
+          });
+        }
+      }
 
-    if (calendarResponse.status !== 200) {
-      throw new Error(
-        `Calendar page request failed: ${calendarResponse.status}`
+      // Fetch calendar page to get room list
+      const calendarUrl = `${baseUrl}/app/calendar`;
+      console.log("🌐 Fetching calendar page for room list...");
+
+      const calendarResponse = await axios.get(calendarUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+          Accept:
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
+          Cookie: sessionCookies,
+          "Cache-Control": "no-cache",
+        },
+      });
+
+      if (calendarResponse.status !== 200) {
+        throw new Error(
+          `Calendar page request failed: ${calendarResponse.status}`
+        );
+      }
+
+      console.log("✅ Calendar page loaded successfully");
+
+      // Extract room data from calendar
+      const calendarData = extractCalendarOptionData(calendarResponse.data);
+
+      if (!calendarData.success) {
+        return res.status(500).json({
+          success: false,
+          error: "Failed to extract calendar data",
+        });
+      }
+
+      // Filter rooms by facility room types
+      const facilityRooms = calendarData.listRoom.filter((room) => {
+        const roomTypeId =
+          room.RoomTypeId || room.Group || room.TypeRoomId || room.Type;
+        return facility.roomTypes.includes(roomTypeId);
+      });
+
+      // Transform room data to simple format for report generation
+      const roomList = facilityRooms.map((room) => {
+        // Extract room number from room name (e.g., "1N1K - 450" -> "450")
+        // const roomNumberMatch = room.Name.match(/-\s*(\d+)/);
+        // const roomNumber = roomNumberMatch ? roomNumberMatch[1] : room.Name;
+
+        return {
+          id: room.Id,
+          name: room.Name,
+          roomNumber: room.Number,
+          roomTypeId:
+            room.RoomTypeId || room.Group || room.TypeRoomId || room.Type,
+          floor: room.Floor || null,
+        };
+      });
+
+      console.log(
+        `✅ Found ${roomList.length} rooms for facility ${facility.name}`
       );
-    }
 
-    console.log("✅ Calendar page loaded successfully");
-
-    // Extract room data from calendar
-    const calendarData = extractCalendarOptionData(calendarResponse.data);
-
-    if (!calendarData.success) {
-      return res.status(500).json({
+      res.json({
+        success: true,
+        facility: {
+          id: facilityId,
+          name: facility.name,
+          roomTypes: facility.roomTypes,
+        },
+        totalRooms: roomList.length,
+        rooms: roomList,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error("❌ List rooms error:", error.message);
+      res.status(500).json({
         success: false,
-        error: "Failed to extract calendar data",
+        error: error.message,
       });
     }
-
-    // Filter rooms by facility room types
-    const facilityRooms = calendarData.listRoom.filter((room) => {
-      const roomTypeId =
-        room.RoomTypeId || room.Group || room.TypeRoomId || room.Type;
-      return facility.roomTypes.includes(roomTypeId);
-    });
-
-    // Transform room data to simple format for report generation
-    const roomList = facilityRooms.map((room) => {
-      // Extract room number from room name (e.g., "1N1K - 450" -> "450")
-      // const roomNumberMatch = room.Name.match(/-\s*(\d+)/);
-      // const roomNumber = roomNumberMatch ? roomNumberMatch[1] : room.Name;
-
-      return {
-        id: room.Id,
-        name: room.Name,
-        roomNumber: room.Number,
-        roomTypeId:
-          room.RoomTypeId || room.Group || room.TypeRoomId || room.Type,
-        floor: room.Floor || null,
-      };
-    });
-
-    console.log(
-      `✅ Found ${roomList.length} rooms for facility ${facility.name}`
-    );
-
-    res.json({
-      success: true,
-      facility: {
-        id: facilityId,
-        name: facility.name,
-        roomTypes: facility.roomTypes,
-      },
-      totalRooms: roomList.length,
-      rooms: roomList,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error("❌ List rooms error:", error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
   }
-});
+);
 
 // New endpoint: Revenue report with date range
-app.post("/api/revenue-report", async (req, res) => {
-  try {
-    const { facilityId, fromDate, toDate } = req.body;
+app.post(
+  "/api/revenue-report",
+  authenticateToken,
+  checkFacilityAccess,
+  async (req, res) => {
+    try {
+      const { facilityId, fromDate, toDate } = req.body;
 
-    if (!facilityId || !facilities[facilityId]) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid facility ID",
-        availableFacilities: Object.keys(facilities),
-      });
-    }
-
-    if (!fromDate || !toDate) {
-      return res.status(400).json({
-        success: false,
-        error: "fromDate and toDate are required (format: DD/MM/YYYY)",
-      });
-    }
-
-    const facility = facilities[facilityId];
-    console.log(
-      `💰 Generating revenue report for facility: ${facility.name} (${fromDate} - ${toDate})`
-    );
-
-    // Login
-    await performLogin(facility.email, facility.password);
-
-    // Fetch bookings for the date range with TypeSeachDate=0 (check-in/arrival)
-    const searchTypes = [
-      { name: "Phòng đến", typeSeachDate: 0, description: "Check-in" },
-    ];
-
-    let allBookings = [];
-
-    for (const roomType of facility.roomTypes) {
-      for (const searchType of searchTypes) {
-        let currentPage = 1;
-        let totalPages = 1;
-
-        do {
-          const pageParams = {
-            TypeSeachDate: searchType.typeSeachDate,
-            FromDate: fromDate,
-            ToDate: toDate,
-            RoomType: roomType,
-            RoomDetail: "",
-            SourceType: "",
-            Source: "",
-            Status: "1,0,3,4,2",
-            Seach: "",
-            IsExtensionFilder: true,
-            p: currentPage,
-          };
-
-          console.log('pageParams', pageParams)
-
-          const queryString = new URLSearchParams(pageParams).toString();
-          const reportUrl = `${reservationPath}?${queryString}`;
-
-          const reportResponse = await axios.get(reportUrl, {
-            headers: {
-              "User-Agent":
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-              Accept:
-                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-              "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
-              "Cache-Control": "no-cache",
-              Referer: `${baseUrl}/`,
-              Cookie: sessionCookies,
-            },
-            maxRedirects: 5,
-          });
-
-          const parsedData = parseBookingData(reportResponse.data);
-
-          if (parsedData.success) {
-            totalPages = parsedData.totalPages;
-
-            // Add bookings with metadata
-            const bookingsWithMeta = parsedData.bookings.map((booking) => ({
-              ...booking,
-              typeSeachDate: searchType.typeSeachDate,
-              searchType: searchType.name,
-              roomType: roomType,
-            }));
-
-            allBookings = allBookings.concat(bookingsWithMeta);
-
-            console.log(
-              `  📄 Page ${currentPage}/${totalPages}: ${parsedData.bookings.length} bookings`
-            );
-          }
-
-          currentPage++;
-        } while (currentPage <= totalPages);
+      if (!facilityId || !facilities[facilityId]) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid facility ID",
+          availableFacilities: Object.keys(facilities),
+        });
       }
-    }
 
-    console.log(`✅ Total bookings fetched: ${allBookings.length}`);
+      if (!fromDate || !toDate) {
+        return res.status(400).json({
+          success: false,
+          error: "fromDate and toDate are required (format: DD/MM/YYYY)",
+        });
+      }
 
-    // Sort bookings by check-in date
-    allBookings.sort((a, b) => {
-      const dateA = dayjs(a.checkinDate, "DD/MM/YYYY");
-      const dateB = dayjs(b.checkinDate, "DD/MM/YYYY");
-      return dateA.diff(dateB);
-    });
-
-    console.log(`✅ Bookings sorted by check-in date`);
-
-    // Group bookings by OTA source
-    const revenueByOTA = {};
-    let totalRevenue = 0;
-
-    allBookings.forEach((booking) => {
-      const source = booking.source || "Khách lẻ";
-      const totalAmount = parseFloat(
-        booking.totalAmount.replace(/[^\d.-]/g, "") || 0
+      const facility = facilities[facilityId];
+      console.log(
+        `💰 Generating revenue report for facility: ${facility.name} (${fromDate} - ${toDate})`
       );
 
-      if (!revenueByOTA[source]) {
-        revenueByOTA[source] = {
-          source: source,
-          totalBookings: 0,
-          totalRevenue: 0,
-          bookings: [],
-        };
+      // Login
+      await performLogin(facility.email, facility.password);
+
+      // Fetch bookings for the date range with TypeSeachDate=0 (check-in/arrival)
+      const searchTypes = [
+        { name: "Phòng đến", typeSeachDate: 0, description: "Check-in" },
+      ];
+
+      let allBookings = [];
+
+      for (const roomType of facility.roomTypes) {
+        for (const searchType of searchTypes) {
+          let currentPage = 1;
+          let totalPages = 1;
+
+          do {
+            const pageParams = {
+              TypeSeachDate: searchType.typeSeachDate,
+              FromDate: fromDate,
+              ToDate: toDate,
+              RoomType: roomType,
+              RoomDetail: "",
+              SourceType: "",
+              Source: "",
+              Status: "1,0,3,4,2",
+              Seach: "",
+              IsExtensionFilder: true,
+              p: currentPage,
+            };
+
+            console.log("pageParams", pageParams);
+
+            const queryString = new URLSearchParams(pageParams).toString();
+            const reportUrl = `${reservationPath}?${queryString}`;
+
+            const reportResponse = await axios.get(reportUrl, {
+              headers: {
+                "User-Agent":
+                  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+                Accept:
+                  "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
+                "Cache-Control": "no-cache",
+                Referer: `${baseUrl}/`,
+                Cookie: sessionCookies,
+              },
+              maxRedirects: 5,
+            });
+
+            const parsedData = parseBookingData(reportResponse.data);
+
+            if (parsedData.success) {
+              totalPages = parsedData.totalPages;
+
+              // Add bookings with metadata
+              const bookingsWithMeta = parsedData.bookings.map((booking) => ({
+                ...booking,
+                typeSeachDate: searchType.typeSeachDate,
+                searchType: searchType.name,
+                roomType: roomType,
+              }));
+
+              allBookings = allBookings.concat(bookingsWithMeta);
+
+              console.log(
+                `  📄 Page ${currentPage}/${totalPages}: ${parsedData.bookings.length} bookings`
+              );
+            }
+
+            currentPage++;
+          } while (currentPage <= totalPages);
+        }
       }
 
-      revenueByOTA[source].totalBookings++;
-      revenueByOTA[source].totalRevenue += totalAmount;
-      revenueByOTA[source].bookings.push(booking);
-      totalRevenue += totalAmount;
-    });
+      console.log(`✅ Total bookings fetched: ${allBookings.length}`);
 
-    res.json({
-      success: true,
-      facility: {
-        id: facilityId,
-        name: facility.name,
-      },
-      dateRange: {
-        from: fromDate,
-        to: toDate,
-      },
-      summary: {
-        totalBookings: allBookings.length,
-        totalRevenue: totalRevenue,
-      },
-      revenueByOTA: Object.values(revenueByOTA),
-      bookings: allBookings,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error("❌ Revenue report error:", error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+      // Sort bookings by check-in date
+      allBookings.sort((a, b) => {
+        const dateA = dayjs(a.checkinDate, "DD/MM/YYYY");
+        const dateB = dayjs(b.checkinDate, "DD/MM/YYYY");
+        return dateA.diff(dateB);
+      });
+
+      console.log(`✅ Bookings sorted by check-in date`);
+
+      // Group bookings by OTA source
+      const revenueByOTA = {};
+      let totalRevenue = 0;
+
+      allBookings.forEach((booking) => {
+        const source = booking.source || "Khách lẻ";
+        const totalAmount = parseFloat(
+          booking.totalAmount.replace(/[^\d.-]/g, "") || 0
+        );
+
+        if (!revenueByOTA[source]) {
+          revenueByOTA[source] = {
+            source: source,
+            totalBookings: 0,
+            totalRevenue: 0,
+            bookings: [],
+          };
+        }
+
+        revenueByOTA[source].totalBookings++;
+        revenueByOTA[source].totalRevenue += totalAmount;
+        revenueByOTA[source].bookings.push(booking);
+        totalRevenue += totalAmount;
+      });
+
+      res.json({
+        success: true,
+        facility: {
+          id: facilityId,
+          name: facility.name,
+        },
+        dateRange: {
+          from: fromDate,
+          to: toDate,
+        },
+        summary: {
+          totalBookings: allBookings.length,
+          totalRevenue: totalRevenue,
+        },
+        revenueByOTA: Object.values(revenueByOTA),
+        bookings: allBookings,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error("❌ Revenue report error:", error.message);
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
   }
-});
+);
 
 // Helper function to parse booking data from HTML
 function parseBookingData(html) {

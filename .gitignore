@@ -64,6 +64,10 @@ typings/
 .env.test
 .env.production
 
+# Configuration files with sensitive data
+config/users.json
+config/facilities.json
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache

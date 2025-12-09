@@ -1,6 +1,98 @@
 // ===== CORE BOOKING DATA FETCHING LOGIC =====
 // Node.js server endpoints - Auto detect based on current location
-const SERVER_BASE_URL = window.location.protocol + "//" + window.location.host;
+const API_BASE_URL = window.location.protocol + "//" + window.location.host;
+
+// ===== AUTHENTICATION =====
+
+// Get auth token from localStorage
+function getAuthToken() {
+  return localStorage.getItem('authToken');
+}
+
+// Get current user
+function getCurrentUser() {
+  const userStr = localStorage.getItem('user');
+  return userStr ? JSON.parse(userStr) : null;
+}
+
+// Logout function
+function logout() {
+  localStorage.removeItem('authToken');
+  localStorage.removeItem('user');
+  window.location.href = 'login.html';
+}
+
+// Check authentication on page load
+function checkAuth() {
+  const token = getAuthToken();
+  if (!token) {
+    window.location.href = 'login.html';
+    return false;
+  }
+  return true;
+}
+
+// Verify token with server
+async function verifyAuth() {
+  const token = getAuthToken();
+  if (!token) {
+    window.location.href = 'login.html';
+    return false;
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/auth/verify`, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    if (!response.ok) {
+      logout();
+      return false;
+    }
+
+    const result = await response.json();
+    if (result.success) {
+      // Update user data
+      localStorage.setItem('user', JSON.stringify(result.user));
+      return true;
+    } else {
+      logout();
+      return false;
+    }
+  } catch (error) {
+    console.error('Auth verification error:', error);
+    return false;
+  }
+}
+
+// Helper to make authenticated API calls
+async function fetchWithAuth(url, options = {}) {
+  const token = getAuthToken();
+  if (!token) {
+    logout();
+    throw new Error('No authentication token');
+  }
+
+  const authOptions = {
+    ...options,
+    headers: {
+      ...options.headers,
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    }
+  };
+
+  const response = await fetch(url, authOptions);
+  
+  if (response.status === 401 || response.status === 403) {
+    logout();
+    throw new Error('Authentication failed');
+  }
+
+  return response;
+}
 
 // ===== MAIN FETCH FUNCTIONS =====
 
@@ -18,13 +110,10 @@ async function fetchReportViaServer() {
   try {
     console.log("🚀 Calling Node.js server for login and fetch...");
 
-    const response = await fetch(
-      `${SERVER_BASE_URL}/api/login-and-fetch-facility`,
+    const response = await fetchWithAuth(
+      `${API_BASE_URL}/api/login-and-fetch-facility`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
         body: JSON.stringify({
           facilityId: facilityId,
           fromDate: dayjs().format("YYYY-MM-DD"),
@@ -101,7 +190,7 @@ async function fetchReportViaServer() {
 // Check server health
 async function checkServerHealth() {
   try {
-    const response = await fetch(`${SERVER_BASE_URL}/api/health`);
+    const response = await fetch(`${API_BASE_URL}/api/health`);
     const health = await response.json();
 
     console.log("🏥 Server health:", health);
@@ -126,7 +215,7 @@ async function loginViaServer() {
   updateApiStatus("pending", "Logging in via server...");
 
   try {
-    const response = await fetch(`${SERVER_BASE_URL}/api/login`, {
+    const response = await fetch(`${API_BASE_URL}/api/login`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -507,11 +596,8 @@ async function generateReportWithRoomList(bookings, facilityId) {
     console.log("🏠 Fetching room list for report generation...");
 
     // Fetch room list from server
-    const response = await fetch(`${SERVER_BASE_URL}/api/list-rooms`, {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/list-rooms`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
       body: JSON.stringify({
         facilityId: facilityId,
       }),
@@ -920,7 +1006,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 // Load facilities from server
 async function loadFacilities() {
   try {
-    const response = await fetch(`${SERVER_BASE_URL}/api/facilities`);
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/facilities`);
     const data = await response.json();
 
     if (data.success) {
@@ -1346,11 +1432,8 @@ async function generateRevenueReport() {
       toDate,
     });
 
-    const response = await fetch(`${SERVER_BASE_URL}/api/revenue-report`, {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/revenue-report`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
       body: JSON.stringify({
         facilityId: facilityId,
         fromDate: fromDate,

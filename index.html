@@ -12,8 +12,16 @@
 <body>
     <div class="container">
         <header class="header">
-            <h1>ReportOTA</h1>
-            <p>OTA Booking Report System</p>
+            <div class="header-content">
+                <div>
+                    <h1>ReportOTA</h1>
+                    <p>OTA Booking Report System</p>
+                </div>
+                <div class="user-section">
+                    <span id="userName" class="user-name">👤 User</span>
+                    <button onclick="logout()" class="logout-btn">Đăng xuất</button>
+                </div>
+            </div>
         </header>
 
         <main class="main-content">
@@ -92,6 +100,26 @@
     <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.13/dayjs.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.13/plugin/customParseFormat.js"></script>
     <script src="script.js"></script>
+    <script>
+        // Check authentication on page load
+        window.addEventListener('DOMContentLoaded', async () => {
+            if (!checkAuth()) {
+                return;
+            }
+            
+            // Verify auth and load user info
+            const isValid = await verifyAuth();
+            if (!isValid) {
+                return;
+            }
+            
+            // Display user name
+            const user = getCurrentUser();
+            if (user) {
+                document.getElementById('userName').textContent = `👤 ${user.name || user.username}`;
+            }
+        });
+    </script>
 </body>
 
 </html>
