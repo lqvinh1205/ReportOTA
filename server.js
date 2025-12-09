@@ -31,24 +31,11 @@ app.use(express.static("."));
 
 // OTA API parameters
 const params = {
-  TypeSeachDate: 0,
-  FromDate: getCurrentDateString(),
-  ToDate: getCurrentDateString(),
-  RoomType: 10559,
-  RoomDetail: "",
-  SourceType: "",
-  Source: "",
-  Status: "1,0,3,4,2",
-  Seach: "",
-  IsExtensionFilder: true,
-  p: 1, // Page number
-  txtEmail: "ota.eraapartment4@gmail.com",
-  txtPassword: "123456",
+  txtEmail: process.env.OTA_EMAIL,
+  txtPassword: process.env.OTA_PASSWORD,
 };
 
-const matrixParams = {};
-
-const baseUrl = "https://id.bluejaypms.com";
+const baseUrl = process.env.OTA_BASE_URL || "https://id.bluejaypms.com";
 const loginPath = `${baseUrl}/login`;
 const reservationPath = `${baseUrl}/app/Reservation`;
 
@@ -246,26 +233,26 @@ app.get("/api/report", async (req, res) => {
 const facilities = {
   era_apartment_1: {
     name: "Era Cát Linh",
-    email: "ota.eraapartment4@gmail.com",
-    password: "123456",
+    email: process.env.OTA_EMAIL,
+    password: process.env.OTA_PASSWORD,
     roomTypes: [11246, 11247],
   },
   era_apartment_2: {
     name: "Era 158 Nguyễn Khánh Toàn",
-    email: "ota.eraapartment4@gmail.com",
-    password: "123456",
+    email: process.env.OTA_EMAIL,
+    password: process.env.OTA_PASSWORD,
     roomTypes: [11248, 11249, 11423, 11424],
   },
   era_apartment_3: {
     name: "Era 58 Nguyễn Khánh Toàn",
-    email: "ota.eraapartment4@gmail.com",
-    password: "123456",
+    email: process.env.OTA_EMAIL,
+    password: process.env.OTA_PASSWORD,
     roomTypes: [10559],
   },
   era_apartment_4: {
     name: "Era TRẦN VĂN LAI",
-    email: "ota.eraapartment4@gmail.com",
-    password: "123456",
+    email: process.env.OTA_EMAIL,
+    password: process.env.OTA_PASSWORD,
     roomTypes: [12906, 12907],
   },
 };
@@ -664,8 +651,8 @@ app.post("/api/login-and-fetch-facility", async (req, res) => {
         do {
           const pageParams = {
             TypeSeachDate: searchType.typeSeachDate,
-            FromDate: fromDate || params.FromDate,
-            ToDate: toDate || params.ToDate,
+            FromDate: fromDate,
+            ToDate: toDate,
             RoomType: roomType,
             RoomDetail: "",
             SourceType: "",
