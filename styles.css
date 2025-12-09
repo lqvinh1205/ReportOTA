@@ -162,9 +162,126 @@ body {
 }
 
 .api-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+/* Two Column Grid Layout */
+.reports-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+}
+
+@media (max-width: 768px) {
+    .reports-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Report Column */
+.report-column {
+    display: flex;
+    flex-direction: column;
     gap: 1rem;
+}
+
+/* Facility Section - Required */
+.facility-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 1.25rem;
+    background: var(--background-color);
+    border: 2px solid var(--primary-color);
+    border-radius: var(--border-radius);
+}
+
+.required-label {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.required-star {
+    color: #ef4444;
+    font-size: 1.1rem;
+    font-weight: 700;
+}
+
+.facility-select {
+    width: 100%;
+    padding: 0.875rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    font-size: 1rem;
+    color: var(--text-primary);
+    background: var(--background-color);
+    transition: var(--transition);
+    font-family: 'Inter', sans-serif;
+    cursor: pointer;
+}
+
+.facility-select:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.facility-select:hover {
+    border-color: var(--primary-color);
+}
+
+/* Date Section - For Revenue Report */
+.date-section {
+    padding: 1.25rem;
+    background: var(--background-color);
+    border: 2px solid #059669;
+    border-radius: var(--border-radius);
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.date-input-wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.date-input-wrapper label {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.date-input {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    font-size: 0.95rem;
+    color: var(--text-primary);
+    background: var(--background-color);
+    transition: var(--transition);
+    font-family: 'Inter', sans-serif;
+}
+
+.date-input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.date-input:hover {
+    border-color: var(--primary-color);
 }
 
 .api-btn {
@@ -226,6 +343,65 @@ body {
 .api-btn.success:hover {
     background: #047857;
     transform: translateY(-2px);
+}
+
+.api-btn.daily-report-btn {
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
+    color: white;
+    font-weight: 600;
+    padding: 1rem 1.5rem;
+    font-size: 1.05rem;
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+    width: 100%;
+}
+
+.api-btn.daily-report-btn:hover {
+    background: linear-gradient(135deg, #2563eb, #1d4ed8);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(59, 130, 246, 0.4);
+}
+
+.api-btn.revenue-btn {
+    background: linear-gradient(135deg, #059669, #10b981);
+    color: white;
+    font-weight: 600;
+    padding: 1rem 1.5rem;
+    font-size: 1.05rem;
+    box-shadow: 0 4px 12px rgba(5, 150, 105, 0.3);
+    width: 100%;
+}
+
+.api-btn.revenue-btn:hover {
+    background: linear-gradient(135deg, #047857, #059669);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(5, 150, 105, 0.4);
+}
+
+/* Optional Actions */
+.optional-actions {
+    display: flex;
+    gap: 0.75rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border-color);
+    flex-wrap: wrap;
+}
+
+.api-btn.optional-btn {
+    background: var(--background-color);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    padding: 0.625rem 1.25rem;
+    font-size: 0.9rem;
+    font-weight: 500;
+    flex: 1;
+    min-width: 180px;
+}
+
+.api-btn.optional-btn:hover {
+    background: var(--surface-color);
+    border-color: var(--primary-color);
+    color: var(--text-primary);
+    transform: translateY(-1px);
 }
 
 .api-btn.info {
