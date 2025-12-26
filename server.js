@@ -4,6 +4,9 @@ const cors = require("cors");
 const { URLSearchParams } = require("url");
 const dayjs = require("dayjs");
 const bcrypt = require("bcrypt");
+const customParseFormat = require("dayjs/plugin/customParseFormat");
+dayjs.extend(customParseFormat);
+
 const {
   authenticateToken,
   checkFacilityAccess,
