@@ -994,8 +994,12 @@ let facilities = [];
 
 // Load facilities when page loads
 document.addEventListener("DOMContentLoaded", async () => {
+  // Verify token with server first - redirect to login if expired
+  const isAuthenticated = await verifyAuth();
+  if (!isAuthenticated) return;
+
   await loadFacilities();
-  
+
   // Set default date range to current day
   const today = new Date();
   
@@ -1027,6 +1031,8 @@ async function loadFacilities() {
     }
   } catch (error) {
     console.error("Error loading facilities:", error);
+    // If it's an auth error, logout() already handles redirect - don't swallow it
+    if (error.message === 'Authentication failed') return;
     const select = document.getElementById("facilitySelect");
     select.innerHTML = '<option value="">Lỗi kết nối server</option>';
   }
