@@ -105,7 +105,8 @@ async function fetchReportViaServer() {
     return;
   }
 
-  updateApiStatus("pending", "Calling Node.js server...");
+  showLoading("Đang lấy dữ liệu booking...");
+  updateApiStatus("pending", "Đang gọi server...");
 
   try {
     console.log("🚀 Calling Node.js server for login and fetch...");
@@ -130,12 +131,9 @@ async function fetchReportViaServer() {
 
     if (result.success) {
       console.log("✅ Server response successful");
-      console.log("Full result:", result);
 
-      // Handle facility-based response structure
       if (result.bookings && result.bookings.length > 0) {
-        // Create report data structure compatible with displayBookingData
-        const reportData = {
+        window.lastBookingData = {
           success: true,
           totalBookings: result.totalBookings,
           bookings: result.bookings,
@@ -144,37 +142,16 @@ async function fetchReportViaServer() {
           facility: result.facility,
         };
 
-        displayBookingData(reportData);
+        updateLoading("Đang tạo báo cáo...");
+        await generateReportWithRoomList(result.bookings, facilityId);
         updateApiStatus(
           "success",
           `✅ Thành công! Lấy được ${result.totalBookings} booking từ ${result.facility.name}`
         );
-        showNotification(
-          `Lấy được ${result.totalBookings} booking từ ${result.facility.name}!`,
-          "success"
-        );
-      } else if (result.report && result.report.bookings) {
-        // Handle old structure (if still exists)
-        displayBookingData(result.report);
-        updateApiStatus(
-          "success",
-          `Server fetch successful - ${result.report.totalBookings} bookings found`
-        );
-        showNotification("Report fetched via Node.js server!", "success");
-      } else if (result.report && result.report.htmlData) {
-        displayReportData(result.report.htmlData);
-        updateApiStatus(
-          "success",
-          `Server fetch successful (${result.report.dataLength} chars)`
-        );
-        showNotification("Report fetched via Node.js server!", "success");
       } else {
-        // More specific error message
         console.error("Unexpected response structure:", result);
         throw new Error(
-          `No booking data found. Response structure: ${Object.keys(
-            result
-          ).join(", ")}`
+          `Không tìm thấy dữ liệu booking. Response: ${Object.keys(result).join(", ")}`
         );
       }
     } else {
@@ -184,6 +161,8 @@ async function fetchReportViaServer() {
     console.error("❌ Server fetch error:", error);
     updateApiStatus("error", `Server error: ${error.message}`);
     showNotification(`Server Error: ${error.message}`, "error");
+  } finally {
+    hideLoading();
   }
 }
 
@@ -551,6 +530,42 @@ function getNotificationColor(type) {
   return colors[type] || colors.info;
 }
 
+// ===== LOADING OVERLAY =====
+
+function showLoading(message = "Đang tải...") {
+  const existing = document.getElementById("loading-overlay");
+  if (existing) {
+    existing.querySelector(".loading-message").textContent = message;
+    return;
+  }
+
+  const overlay = document.createElement("div");
+  overlay.id = "loading-overlay";
+  overlay.style.cssText = `
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.55); z-index: 9999;
+    display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 1rem;
+  `;
+  overlay.innerHTML = `
+    <style>
+      @keyframes ota-spin { to { transform: rotate(360deg); } }
+    </style>
+    <div style="width:52px;height:52px;border:5px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:ota-spin 0.75s linear infinite;"></div>
+    <div class="loading-message" style="color:#fff;font-size:1.05rem;font-weight:500;text-align:center;padding:0 1rem;">${message}</div>
+  `;
+  document.body.appendChild(overlay);
+}
+
+function updateLoading(message) {
+  const msgEl = document.querySelector("#loading-overlay .loading-message");
+  if (msgEl) msgEl.textContent = message;
+}
+
+function hideLoading() {
+  const overlay = document.getElementById("loading-overlay");
+  if (overlay) overlay.remove();
+}
+
 // ===== EXPORT FUNCTIONS =====
 
 // Export bookings to CSV (placeholder)
@@ -726,9 +741,11 @@ function generateReportText(bookings, allRoomNumbers = null) {
   // Calculate vacant rooms using room list from server (if available)
   if (allRoomNumbers && Array.isArray(allRoomNumbers)) {
     console.log("🔍 Calculating vacant rooms from server room list...");
-    allRoomNumbers.forEach((roomNumber) => {
-      if (!occupiedRooms.has(roomNumber)) {
-        vacant.push(roomNumber);
+    allRoomNumbers.forEach((rawNumber) => {
+      // Normalize server room number (e.g., "P302" → "302") before comparing
+      const normalized = convertBookingRoomName(String(rawNumber));
+      if (!occupiedRooms.has(normalized)) {
+        vacant.push(normalized);
       }
     });
     console.log(
@@ -795,15 +812,24 @@ function getTextPayment(source) {
   return config[source] || `${source} đã thanh toán`;
 }
 
-//1N1K - 450, unassign -> 450, unassign
+// Extract pure room number from various formats:
+// "1N1K - 450"    → "450"
+// "STUDIO - P502" → "502"
+// "1N1K - P304"   → "304"
+// "P502"          → "502"
+// "403"           → "403"
 function convertBookingRoomName(roomName) {
-  // Extract room number from format like "1N1K - 450"
-  const match = roomName.match(/-\s*(\d+)/);
-  if (match && match[1]) {
-    return match[1]; // Trả về số phòng sau dấu "-"
-  }
+  if (!roomName) return roomName;
 
-  return roomName; // Fallback to original if no match
+  // Match digits after "- " or "- P" (handles both "- 450" and "- P502")
+  const dashMatch = roomName.match(/-\s*P?(\d+)/i);
+  if (dashMatch) return dashMatch[1];
+
+  // Strip leading "P" from plain "P502" format
+  const pMatch = roomName.match(/^P(\d+)$/i);
+  if (pMatch) return pMatch[1];
+
+  return roomName;
 }
 
 // Show simple popup with copyable text

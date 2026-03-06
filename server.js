@@ -62,8 +62,9 @@ function extractCookies(response) {
   return "";
 }
 
-// Reusable login function
+// Reusable login function - returns cookies locally, does NOT modify the global sessionCookies
 async function performLogin(facilityEmail = null, facilityPassword = null) {
+  let localCookies = "";
   try {
     console.log("🔐 Starting login process...");
 
@@ -83,9 +84,9 @@ async function performLogin(facilityEmail = null, facilityPassword = null) {
       },
     });
 
-    // Extract session cookies
-    sessionCookies = extractCookies(loginPageResponse);
-    console.log("📄 Login page loaded, cookies:", sessionCookies);
+    // Extract session cookies into local variable
+    localCookies = extractCookies(loginPageResponse);
+    console.log("📄 Login page loaded, cookies:", localCookies);
 
     // Extract hidden form fields from login page
     const loginPageHtml = loginPageResponse.data;
@@ -129,7 +130,7 @@ async function performLogin(facilityEmail = null, facilityPassword = null) {
         "Cache-Control": "no-cache",
         Origin: baseUrl,
         Referer: loginPath,
-        Cookie: sessionCookies,
+        Cookie: localCookies,
       },
       maxRedirects: 0,
       validateStatus: function (status) {
@@ -137,20 +138,20 @@ async function performLogin(facilityEmail = null, facilityPassword = null) {
       },
     });
 
-    // Update session cookies
+    // Update local cookies (do NOT touch the global sessionCookies)
     const newCookies = extractCookies(loginResponse);
     if (newCookies) {
-      sessionCookies = newCookies;
+      localCookies = newCookies;
     }
 
     console.log("✅ Login response status:", loginResponse.status);
-    console.log("🍪 Updated cookies:", sessionCookies);
+    console.log("🍪 Updated cookies:", localCookies);
 
     return {
       success: true,
       status: loginResponse.status,
       message: "Login successful",
-      cookies: sessionCookies,
+      cookies: localCookies,
       redirectLocation: loginResponse.headers.location || null,
     };
   } catch (error) {
@@ -646,7 +647,8 @@ app.post(
         `🏢 Starting comprehensive fetch for facility: ${facility.name}`
       );
 
-      // Use facility credentials for login
+      // Use facility credentials for login - local cookies per request
+      let requestCookies = "";
       const loginPageResponse = await axios.get(loginPath, {
         headers: {
           "User-Agent":
@@ -658,7 +660,7 @@ app.post(
         },
       });
 
-      sessionCookies = extractCookies(loginPageResponse);
+      requestCookies = extractCookies(loginPageResponse);
 
       const loginPageHtml = loginPageResponse.data;
       const viewStateMatch =
@@ -694,7 +696,7 @@ app.post(
           "Cache-Control": "no-cache",
           Origin: baseUrl,
           Referer: loginPath,
-          Cookie: sessionCookies,
+          Cookie: requestCookies,
         },
         maxRedirects: 0,
         validateStatus: function (status) {
@@ -704,7 +706,7 @@ app.post(
 
       const newCookies = extractCookies(loginResponse);
       if (newCookies) {
-        sessionCookies = newCookies;
+        requestCookies = newCookies;
       }
 
       console.log("✅ Login successful for facility:", facility.name);
@@ -776,7 +778,7 @@ app.post(
                 "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
                 "Cache-Control": "no-cache",
                 Referer: `${baseUrl}/`,
-                Cookie: sessionCookies,
+                Cookie: requestCookies,
               },
               maxRedirects: 5,
             });
@@ -908,21 +910,17 @@ app.post(
       const facility = facilities[facilityId];
       console.log(`🏠 Getting room list for facility: ${facility.name}`);
 
-      // Login with facility credentials if needed
-      if (!sessionCookies) {
-        console.log("🔐 No session found, logging in...");
-        const loginResult = await performLogin(
-          facility.email,
-          facility.password
-        );
-        if (!loginResult.success) {
-          return res.status(500).json({
-            success: false,
-            error: "Login failed",
-            details: loginResult.error,
-          });
-        }
+      // Always login fresh with facility credentials (no shared session state)
+      console.log("🔐 Logging in for room list...");
+      const loginResult = await performLogin(facility.email, facility.password);
+      if (!loginResult.success) {
+        return res.status(500).json({
+          success: false,
+          error: "Login failed",
+          details: loginResult.error,
+        });
       }
+      const listRoomCookies = loginResult.cookies;
 
       // Fetch calendar page to get room list
       const calendarUrl = `${baseUrl}/app/calendar`;
@@ -934,7 +932,7 @@ app.post(
           Accept:
             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
           "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
-          Cookie: sessionCookies,
+          Cookie: listRoomCookies,
           "Cache-Control": "no-cache",
         },
       });
@@ -1034,8 +1032,12 @@ app.post(
         `💰 Generating revenue report for facility: ${facility.name} (${fromDate} - ${toDate})`
       );
 
-      // Login
-      await performLogin(facility.email, facility.password);
+      // Login - use returned cookies locally
+      const revenueLoginResult = await performLogin(facility.email, facility.password);
+      if (!revenueLoginResult.success) {
+        return res.status(500).json({ success: false, error: "Login failed" });
+      }
+      const revenueCookies = revenueLoginResult.cookies;
 
       // Fetch bookings for the date range with TypeSeachDate=0 (check-in/arrival)
       const searchTypes = [
@@ -1078,7 +1080,7 @@ app.post(
                 "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
                 "Cache-Control": "no-cache",
                 Referer: `${baseUrl}/`,
-                Cookie: sessionCookies,
+                Cookie: revenueCookies,
               },
               maxRedirects: 5,
             });
