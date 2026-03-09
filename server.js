@@ -62,6 +62,175 @@ function extractCookies(response) {
   return "";
 }
 
+function mergeCookieStrings(...cookieStrings) {
+  const cookieMap = new Map();
+
+  cookieStrings
+    .filter(Boolean)
+    .forEach((cookieString) => {
+      cookieString.split(";").forEach((part) => {
+        const trimmed = part.trim();
+        if (!trimmed) return;
+
+        const eqIndex = trimmed.indexOf("=");
+        if (eqIndex === -1) return;
+
+        const name = trimmed.slice(0, eqIndex).trim();
+        const value = trimmed.slice(eqIndex + 1).trim();
+        if (!name) return;
+
+        cookieMap.set(name, value);
+      });
+    });
+
+  return Array.from(cookieMap.entries())
+    .map(([name, value]) => `${name}=${value}`)
+    .join("; ");
+}
+
+function isOtaLoginSuccessful(loginResponse, cookies) {
+  const redirectLocation = loginResponse.headers.location || "";
+  const hasValidRedirect =
+    loginResponse.status >= 300 &&
+    loginResponse.status < 400 &&
+    redirectLocation &&
+    !/\/login/i.test(redirectLocation);
+  const hasTokenCookie = /(?:^|;\s*)HtToken=/.test(cookies || "");
+
+  return hasValidRedirect && hasTokenCookie;
+}
+
+function isRedirectToLogin(response) {
+  if (!response) return false;
+  if (response.status < 300 || response.status >= 400) return false;
+
+  const location = response.headers?.location || "";
+  return /\/app\/login|\/login/i.test(location);
+}
+
+function extractHiddenField(html, fieldName) {
+  const match = html.match(new RegExp(`${fieldName}[^>]*value=\"([^\"]*)\"`, "i"));
+  return match ? match[1] : "";
+}
+
+async function canAccessReservation(cookies, roomType, fromDate, toDate) {
+  const probeParams = {
+    TypeSeachDate: 1,
+    FromDate: fromDate,
+    ToDate: toDate,
+    RoomType: roomType,
+    RoomDetail: "",
+    SourceType: "",
+    Source: "",
+    Status: "1,0,3,4,2",
+    Seach: "",
+    IsExtensionFilder: true,
+    p: 1,
+  };
+
+  const probeUrl = `${reservationPath}?${new URLSearchParams(probeParams).toString()}`;
+  const response = await axios.get(probeUrl, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+      Accept:
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
+      "Cache-Control": "no-cache",
+      Referer: `${baseUrl}/`,
+      Cookie: cookies,
+    },
+    maxRedirects: 0,
+    validateStatus: function (status) {
+      return status >= 200 && status < 400;
+    },
+  });
+
+  return !isRedirectToLogin(response);
+}
+
+async function resolveMultiHotelSessionCookies(
+  initialCookies,
+  roomType,
+  fromDate,
+  toDate
+) {
+  const myHotelsUrl = `${baseUrl}/my-hotels`;
+
+  const myHotelsResponse = await axios.get(myHotelsUrl, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+      Accept:
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
+      "Cache-Control": "no-cache",
+      Cookie: initialCookies,
+    },
+  });
+
+  const pageHtml = String(myHotelsResponse.data || "");
+  const eventTargets = [
+    ...pageHtml.matchAll(/__doPostBack\(&#39;([^']+)&#39;,&#39;&#39;\)/g),
+  ].map((match) => match[1]);
+
+  if (eventTargets.length === 0) {
+    return { success: false, error: "No hotel options found on /my-hotels" };
+  }
+
+  for (const eventTarget of eventTargets) {
+    let attemptCookies = initialCookies;
+    const postData = new URLSearchParams({
+      __EVENTTARGET: eventTarget,
+      __EVENTARGUMENT: "",
+      __VIEWSTATE: extractHiddenField(pageHtml, "__VIEWSTATE"),
+      __VIEWSTATEGENERATOR: extractHiddenField(pageHtml, "__VIEWSTATEGENERATOR"),
+      __EVENTVALIDATION: extractHiddenField(pageHtml, "__EVENTVALIDATION"),
+    });
+
+    const selectHotelResponse = await axios.post(myHotelsUrl, postData.toString(), {
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent":
+          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
+        "Cache-Control": "no-cache",
+        Referer: myHotelsUrl,
+        Origin: baseUrl,
+        Cookie: attemptCookies,
+      },
+      maxRedirects: 0,
+      validateStatus: function (status) {
+        return status >= 200 && status < 400;
+      },
+    });
+
+    attemptCookies = mergeCookieStrings(
+      attemptCookies,
+      extractCookies(selectHotelResponse)
+    );
+
+    const accessOk = await canAccessReservation(
+      attemptCookies,
+      roomType,
+      fromDate,
+      toDate
+    );
+
+    if (accessOk) {
+      return { success: true, cookies: attemptCookies, selectedTarget: eventTarget };
+    }
+  }
+
+  return {
+    success: false,
+    error:
+      "Unable to select a hotel context that can access Reservation for this room type.",
+  };
+}
+
 // Reusable login function - returns cookies locally, does NOT modify the global sessionCookies
 async function performLogin(facilityEmail = null, facilityPassword = null) {
   let localCookies = "";
@@ -138,14 +307,21 @@ async function performLogin(facilityEmail = null, facilityPassword = null) {
       },
     });
 
-    // Update local cookies (do NOT touch the global sessionCookies)
+    // Merge login-page cookies and post-login cookies into one request cookie jar.
     const newCookies = extractCookies(loginResponse);
-    if (newCookies) {
-      localCookies = newCookies;
-    }
+    localCookies = mergeCookieStrings(localCookies, newCookies);
 
     console.log("✅ Login response status:", loginResponse.status);
     console.log("🍪 Updated cookies:", localCookies);
+
+    if (!isOtaLoginSuccessful(loginResponse, localCookies)) {
+      return {
+        success: false,
+        status: loginResponse.status,
+        error: "OTA login failed. Check OTA username/password for this facility.",
+        redirectLocation: loginResponse.headers.location || null,
+      };
+    }
 
     return {
       success: true,
@@ -647,66 +823,45 @@ app.post(
         `🏢 Starting comprehensive fetch for facility: ${facility.name}`
       );
 
-      // Use facility credentials for login - local cookies per request
-      let requestCookies = "";
-      const loginPageResponse = await axios.get(loginPath, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-          Accept:
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-          "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
-          "Cache-Control": "no-cache",
-        },
-      });
+      const loginResult = await performLogin(facility.email, facility.password);
+      if (!loginResult.success) {
+        return res.status(401).json({
+          success: false,
+          error: loginResult.error || "OTA login failed",
+          facility: {
+            id: facilityId,
+            name: facility.name,
+            email: facility.email,
+          },
+          otaStatus: loginResult.status || null,
+          redirectLocation: loginResult.redirectLocation || null,
+        });
+      }
 
-      requestCookies = extractCookies(loginPageResponse);
+      let requestCookies = loginResult.cookies;
 
-      const loginPageHtml = loginPageResponse.data;
-      const viewStateMatch =
-        loginPageHtml.match(/__VIEWSTATE[^>]*value="([^"]*)"/) || [];
-      const viewStateGeneratorMatch =
-        loginPageHtml.match(/__VIEWSTATEGENERATOR[^>]*value="([^"]*)"/) || [];
-      const eventValidationMatch =
-        loginPageHtml.match(/__EVENTVALIDATION[^>]*value="([^"]*)"/) || [];
+      if (/\/my-hotels/i.test(loginResult.redirectLocation || "")) {
+        console.log("🏨 Multi-hotel account detected, selecting hotel context...");
+        const contextResult = await resolveMultiHotelSessionCookies(
+          requestCookies,
+          facility.roomTypes[0],
+          fromDate,
+          toDate
+        );
 
-      const viewState = viewStateMatch[1] || "";
-      const viewStateGenerator = viewStateGeneratorMatch[1] || "";
-      const eventValidation = eventValidationMatch[1] || "";
+        if (!contextResult.success) {
+          return res.status(401).json({
+            success: false,
+            error: contextResult.error,
+            facility: {
+              id: facilityId,
+              name: facility.name,
+            },
+          });
+        }
 
-      const loginData = new URLSearchParams({
-        __EVENTTARGET: "lkLogin",
-        __EVENTARGUMENT: "",
-        __VIEWSTATE: viewState,
-        __VIEWSTATEGENERATOR: viewStateGenerator,
-        __EVENTVALIDATION: eventValidation,
-        ddlLangCode: "vi-VN",
-        txtEmail: facility.email,
-        txtPassword: facility.password,
-      });
-
-      const loginResponse = await axios.post(loginPath, loginData.toString(), {
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "User-Agent":
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-          Accept:
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-          "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
-          "Cache-Control": "no-cache",
-          Origin: baseUrl,
-          Referer: loginPath,
-          Cookie: requestCookies,
-        },
-        maxRedirects: 0,
-        validateStatus: function (status) {
-          return status >= 200 && status < 400;
-        },
-      });
-
-      const newCookies = extractCookies(loginResponse);
-      if (newCookies) {
-        requestCookies = newCookies;
+        requestCookies = contextResult.cookies;
+        console.log("✅ Selected hotel context:", contextResult.selectedTarget);
       }
 
       console.log("✅ Login successful for facility:", facility.name);
@@ -780,8 +935,25 @@ app.post(
                 Referer: `${baseUrl}/`,
                 Cookie: requestCookies,
               },
-              maxRedirects: 5,
+              maxRedirects: 0,
+              validateStatus: function (status) {
+                return status >= 200 && status < 400;
+              },
             });
+
+            if (isRedirectToLogin(reportResponse)) {
+              return res.status(401).json({
+                success: false,
+                error:
+                  "OTA session is not authenticated. Reservation request was redirected to login.",
+                facility: {
+                  id: facilityId,
+                  name: facility.name,
+                },
+                reportUrl: reportUrl,
+                redirectLocation: reportResponse.headers.location || null,
+              });
+            }
 
             const parsedData = parseBookingData(reportResponse.data);
 
@@ -1234,7 +1406,7 @@ function parseBookingData(html) {
 
     // Find the main booking table
     const bookingTableMatch = html.match(
-      /<table[^>]*class="[^"]*table[^"]*"[^>]*>([\s\S]*?)<\/table>/i
+      /<table[^>]*class="[^"]*card-table[^"]*"[^>]*>([\s\S]*?)<\/table>/i
     );
 
     if (!bookingTableMatch) {
