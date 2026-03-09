@@ -65,23 +65,21 @@ function extractCookies(response) {
 function mergeCookieStrings(...cookieStrings) {
   const cookieMap = new Map();
 
-  cookieStrings
-    .filter(Boolean)
-    .forEach((cookieString) => {
-      cookieString.split(";").forEach((part) => {
-        const trimmed = part.trim();
-        if (!trimmed) return;
+  cookieStrings.filter(Boolean).forEach((cookieString) => {
+    cookieString.split(";").forEach((part) => {
+      const trimmed = part.trim();
+      if (!trimmed) return;
 
-        const eqIndex = trimmed.indexOf("=");
-        if (eqIndex === -1) return;
+      const eqIndex = trimmed.indexOf("=");
+      if (eqIndex === -1) return;
 
-        const name = trimmed.slice(0, eqIndex).trim();
-        const value = trimmed.slice(eqIndex + 1).trim();
-        if (!name) return;
+      const name = trimmed.slice(0, eqIndex).trim();
+      const value = trimmed.slice(eqIndex + 1).trim();
+      if (!name) return;
 
-        cookieMap.set(name, value);
-      });
+      cookieMap.set(name, value);
     });
+  });
 
   return Array.from(cookieMap.entries())
     .map(([name, value]) => `${name}=${value}`)
@@ -109,7 +107,9 @@ function isRedirectToLogin(response) {
 }
 
 function extractHiddenField(html, fieldName) {
-  const match = html.match(new RegExp(`${fieldName}[^>]*value=\"([^\"]*)\"`, "i"));
+  const match = html.match(
+    new RegExp(`${fieldName}[^>]*value=\"([^\"]*)\"`, "i"),
+  );
   return match ? match[1] : "";
 }
 
@@ -128,7 +128,9 @@ async function canAccessReservation(cookies, roomType, fromDate, toDate) {
     p: 1,
   };
 
-  const probeUrl = `${reservationPath}?${new URLSearchParams(probeParams).toString()}`;
+  const probeUrl = `${reservationPath}?${new URLSearchParams(
+    probeParams,
+  ).toString()}`;
   const response = await axios.get(probeUrl, {
     headers: {
       "User-Agent":
@@ -151,9 +153,7 @@ async function canAccessReservation(cookies, roomType, fromDate, toDate) {
 
 async function resolveMultiHotelSessionCookies(
   initialCookies,
-  roomType,
-  fromDate,
-  toDate
+  hotelId,
 ) {
   const myHotelsUrl = `${baseUrl}/my-hotels`;
 
@@ -170,25 +170,53 @@ async function resolveMultiHotelSessionCookies(
   });
 
   const pageHtml = String(myHotelsResponse.data || "");
-  const eventTargets = [
-    ...pageHtml.matchAll(/__doPostBack\(&#39;([^']+)&#39;,&#39;&#39;\)/g),
-  ].map((match) => match[1]);
 
-  if (eventTargets.length === 0) {
+  // Parse all hotel rows: pair each hrId value with its __doPostBack eventTarget
+  // HTML structure: <input ... name="lvHotels$ctrl{N}$hrId" value="{hotelNumericId}" />
+  //                 <a ... href="javascript:__doPostBack('lvHotels$ctrl{N}$lbtNameHotel','')">
+  const hotelRows = [];
+  const hrIdRegex = /name="(lvHotels\$ctrl(\d+)\$hrId)"[^>]*value="(\d+)"/g;
+  let hrMatch;
+  while ((hrMatch = hrIdRegex.exec(pageHtml)) !== null) {
+    const idx = hrMatch[2];
+    const parsedId = parseInt(hrMatch[3], 10);
+    // The corresponding __doPostBack target for this row
+    const eventTarget = `lvHotels$ctrl${idx}$lbtNameHotel`;
+    hotelRows.push({ idx, hotelNumericId: parsedId, eventTarget });
+  }
+
+  console.log(`🏨 Found ${hotelRows.length} hotel(s) on /my-hotels:`, hotelRows.map(h => `${h.hotelNumericId}→${h.eventTarget}`));
+
+  if (hotelRows.length === 0) {
     return { success: false, error: "No hotel options found on /my-hotels" };
   }
 
-  for (const eventTarget of eventTargets) {
-    let attemptCookies = initialCookies;
-    const postData = new URLSearchParams({
-      __EVENTTARGET: eventTarget,
-      __EVENTARGUMENT: "",
-      __VIEWSTATE: extractHiddenField(pageHtml, "__VIEWSTATE"),
-      __VIEWSTATEGENERATOR: extractHiddenField(pageHtml, "__VIEWSTATEGENERATOR"),
-      __EVENTVALIDATION: extractHiddenField(pageHtml, "__EVENTVALIDATION"),
-    });
+  // Find the row matching the configured hotelId
+  const targetRow = hotelId
+    ? hotelRows.find((h) => h.hotelNumericId === Number(hotelId))
+    : null;
 
-    const selectHotelResponse = await axios.post(myHotelsUrl, postData.toString(), {
+  if (!targetRow) {
+    return {
+      success: false,
+      error: `Hotel ID ${hotelId} not found on /my-hotels page. Available IDs: ${hotelRows.map((h) => h.hotelNumericId).join(", ")}`,
+    };
+  }
+
+  console.log(`🎯 Selecting hotel ID ${hotelId} via eventTarget: ${targetRow.eventTarget}`);
+
+  const postData = new URLSearchParams({
+    __EVENTTARGET: targetRow.eventTarget,
+    __EVENTARGUMENT: "",
+    __VIEWSTATE: extractHiddenField(pageHtml, "__VIEWSTATE"),
+    __VIEWSTATEGENERATOR: extractHiddenField(pageHtml, "__VIEWSTATEGENERATOR"),
+    __EVENTVALIDATION: extractHiddenField(pageHtml, "__EVENTVALIDATION"),
+  });
+
+  const selectHotelResponse = await axios.post(
+    myHotelsUrl,
+    postData.toString(),
+    {
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         "User-Agent":
@@ -199,36 +227,57 @@ async function resolveMultiHotelSessionCookies(
         "Cache-Control": "no-cache",
         Referer: myHotelsUrl,
         Origin: baseUrl,
-        Cookie: attemptCookies,
+        Cookie: initialCookies,
       },
       maxRedirects: 0,
       validateStatus: function (status) {
         return status >= 200 && status < 400;
       },
-    });
+    },
+  );
 
-    attemptCookies = mergeCookieStrings(
-      attemptCookies,
-      extractCookies(selectHotelResponse)
-    );
+  const finalCookies = mergeCookieStrings(
+    initialCookies,
+    extractCookies(selectHotelResponse),
+  );
 
-    const accessOk = await canAccessReservation(
-      attemptCookies,
-      roomType,
-      fromDate,
-      toDate
-    );
-
-    if (accessOk) {
-      return { success: true, cookies: attemptCookies, selectedTarget: eventTarget };
-    }
-  }
+  console.log(`✅ Hotel context selected, cookies updated.`);
 
   return {
-    success: false,
-    error:
-      "Unable to select a hotel context that can access Reservation for this room type.",
+    success: true,
+    cookies: finalCookies,
+    selectedTarget: targetRow.eventTarget,
+    selectedHotelId: hotelId,
   };
+}
+
+// Performs OTA login for a facility and resolves multi-hotel cookie context if needed.
+// Returns { success, cookies, error?, facility? }
+async function loginAndResolveCookies(facility) {
+  const loginResult = await performLogin(facility.email, facility.password);
+  if (!loginResult.success) {
+    return { success: false, error: loginResult.error || "OTA login failed", otaStatus: loginResult.status, redirectLocation: loginResult.redirectLocation };
+  }
+
+  let cookies = loginResult.cookies;
+
+  if (/\/my-hotels/i.test(loginResult.redirectLocation || "")) {
+    console.log("🏨 Multi-hotel account detected, selecting hotel context...");
+    if (!facility.hotelId) {
+      return {
+        success: false,
+        error: `Facility "${facility.name}" is a multi-hotel account but has no hotelId configured in facilities.json`,
+      };
+    }
+    const contextResult = await resolveMultiHotelSessionCookies(cookies, facility.hotelId);
+    if (!contextResult.success) {
+      return { success: false, error: contextResult.error };
+    }
+    cookies = contextResult.cookies;
+    console.log("✅ Selected hotel context:", contextResult.selectedTarget, "(hotelId:", facility.hotelId, ")");
+  }
+
+  return { success: true, cookies };
 }
 
 // Reusable login function - returns cookies locally, does NOT modify the global sessionCookies
@@ -318,7 +367,8 @@ async function performLogin(facilityEmail = null, facilityPassword = null) {
       return {
         success: false,
         status: loginResponse.status,
-        error: "OTA login failed. Check OTA username/password for this facility.",
+        error:
+          "OTA login failed. Check OTA username/password for this facility.",
         redirectLocation: loginResponse.headers.location || null,
       };
     }
@@ -650,7 +700,7 @@ app.post("/api/login-and-fetch", async (req, res) => {
     // Fetch data for each TypeSeachDate
     for (const searchType of searchTypes) {
       console.log(
-        `\n🔍 Fetching data for ${searchType.name} (TypeSeachDate=${searchType.typeSeachDate})...`
+        `\n🔍 Fetching data for ${searchType.name} (TypeSeachDate=${searchType.typeSeachDate})...`,
       );
 
       let typeBookings = [];
@@ -670,7 +720,7 @@ app.post("/api/login-and-fetch", async (req, res) => {
 
         console.log(
           `🔗 Fetching ${searchType.name} page ${currentPage} with params:`,
-          pageParams
+          pageParams,
         );
 
         const queryString = new URLSearchParams(pageParams).toString();
@@ -706,19 +756,19 @@ app.post("/api/login-and-fetch", async (req, res) => {
           fetchedPages++;
 
           console.log(
-            `✅ ${searchType.name} - Page ${currentPage}/${totalPages} - Found ${parsedData.bookingsOnPage} bookings`
+            `✅ ${searchType.name} - Page ${currentPage}/${totalPages} - Found ${parsedData.bookingsOnPage} bookings`,
           );
 
           // If only 1 page, break early
           if (totalPages === 1) {
             console.log(
-              `📄 ${searchType.name} - Only 1 page of data available`
+              `📄 ${searchType.name} - Only 1 page of data available`,
             );
             break;
           }
         } else {
           console.log(
-            `❌ ${searchType.name} - Failed to parse page ${currentPage}`
+            `❌ ${searchType.name} - Failed to parse page ${currentPage}`,
           );
           break;
         }
@@ -728,7 +778,7 @@ app.post("/api/login-and-fetch", async (req, res) => {
         // Safety limit to prevent infinite loop
         if (fetchedPages >= 20) {
           console.log(
-            `⚠️  ${searchType.name} - Reached safety limit of 20 pages`
+            `⚠️  ${searchType.name} - Reached safety limit of 20 pages`,
           );
           break;
         }
@@ -750,7 +800,7 @@ app.post("/api/login-and-fetch", async (req, res) => {
       });
 
       console.log(
-        `🎉 ${searchType.name} - Completed! ${typeBookings.length} bookings from ${fetchedPages} pages`
+        `🎉 ${searchType.name} - Completed! ${typeBookings.length} bookings from ${fetchedPages} pages`,
       );
 
       // Add to all bookings
@@ -769,11 +819,11 @@ app.post("/api/login-and-fetch", async (req, res) => {
     console.log(`\n🎊 COMPREHENSIVE FETCH COMPLETED!`);
     console.log(`📊 Total bookings: ${allBookings.length}`);
     console.log(
-      `📑 Total pages processed: ${fetchSummary.totalPagesProcessed}/${fetchSummary.totalPages}`
+      `📑 Total pages processed: ${fetchSummary.totalPagesProcessed}/${fetchSummary.totalPages}`,
     );
     fetchSummary.searchTypes.forEach((type) => {
       console.log(
-        `   ${type.name}: ${type.bookings} bookings (${type.pages}/${type.totalPages} pages)`
+        `   ${type.name}: ${type.bookings} bookings (${type.pages}/${type.totalPages} pages)`,
       );
     });
 
@@ -820,48 +870,22 @@ app.post(
 
       const facility = facilities[facilityId];
       console.log(
-        `🏢 Starting comprehensive fetch for facility: ${facility.name}`
+        `🏢 Starting comprehensive fetch for facility: ${facility.name}`,
       );
 
-      const loginResult = await performLogin(facility.email, facility.password);
-      if (!loginResult.success) {
-        return res.status(401).json({
-          success: false,
-          error: loginResult.error || "OTA login failed",
-          facility: {
-            id: facilityId,
-            name: facility.name,
-            email: facility.email,
-          },
-          otaStatus: loginResult.status || null,
-          redirectLocation: loginResult.redirectLocation || null,
-        });
-      }
-
-      let requestCookies = loginResult.cookies;
-
-      if (/\/my-hotels/i.test(loginResult.redirectLocation || "")) {
-        console.log("🏨 Multi-hotel account detected, selecting hotel context...");
-        const contextResult = await resolveMultiHotelSessionCookies(
-          requestCookies,
-          facility.roomTypes[0],
-          fromDate,
-          toDate
-        );
-
-        if (!contextResult.success) {
+      let requestCookies;
+      {
+        const resolved = await loginAndResolveCookies(facility);
+        if (!resolved.success) {
           return res.status(401).json({
             success: false,
-            error: contextResult.error,
-            facility: {
-              id: facilityId,
-              name: facility.name,
-            },
+            error: resolved.error,
+            facility: { id: facilityId, name: facility.name, email: facility.email },
+            otaStatus: resolved.otaStatus || null,
+            redirectLocation: resolved.redirectLocation || null,
           });
         }
-
-        requestCookies = contextResult.cookies;
-        console.log("✅ Selected hotel context:", contextResult.selectedTarget);
+        requestCookies = resolved.cookies;
       }
 
       console.log("✅ Login successful for facility:", facility.name);
@@ -973,7 +997,7 @@ app.post(
               fetchedPages++;
 
               console.log(
-                `    ✅ Page ${currentPage}/${totalPages} - ${parsedData.bookingsOnPage} bookings`
+                `    ✅ Page ${currentPage}/${totalPages} - ${parsedData.bookingsOnPage} bookings`,
               );
 
               if (totalPages === 1) break;
@@ -1003,7 +1027,7 @@ app.post(
 
           roomTypeBookings = roomTypeBookings.concat(typeBookings);
           console.log(
-            `    🎉 ${searchType.name} completed: ${typeBookings.length} bookings`
+            `    🎉 ${searchType.name} completed: ${typeBookings.length} bookings`,
           );
 
           await new Promise((resolve) => setTimeout(resolve, 300));
@@ -1014,7 +1038,7 @@ app.post(
         allBookings = allBookings.concat(roomTypeBookings);
 
         console.log(
-          `🏠 RoomType ${roomType} completed: ${roomTypeBookings.length} total bookings`
+          `🏠 RoomType ${roomType} completed: ${roomTypeBookings.length} total bookings`,
         );
 
         await new Promise((resolve) => setTimeout(resolve, 500));
@@ -1044,7 +1068,7 @@ app.post(
         error: error.message,
       });
     }
-  }
+  },
 );
 
 // Simple health check endpoint for Docker
@@ -1084,15 +1108,14 @@ app.post(
 
       // Always login fresh with facility credentials (no shared session state)
       console.log("🔐 Logging in for room list...");
-      const loginResult = await performLogin(facility.email, facility.password);
-      if (!loginResult.success) {
-        return res.status(500).json({
+      const { success: loginOk, cookies: listRoomCookies, error: loginErr } = await loginAndResolveCookies(facility);
+      if (!loginOk) {
+        return res.status(401).json({
           success: false,
-          error: "Login failed",
-          details: loginResult.error,
+          error: loginErr,
+          facility: { id: facilityId, name: facility.name },
         });
       }
-      const listRoomCookies = loginResult.cookies;
 
       // Fetch calendar page to get room list
       const calendarUrl = `${baseUrl}/app/calendar`;
@@ -1111,7 +1134,7 @@ app.post(
 
       if (calendarResponse.status !== 200) {
         throw new Error(
-          `Calendar page request failed: ${calendarResponse.status}`
+          `Calendar page request failed: ${calendarResponse.status}`,
         );
       }
 
@@ -1151,7 +1174,7 @@ app.post(
       });
 
       console.log(
-        `✅ Found ${roomList.length} rooms for facility ${facility.name}`
+        `✅ Found ${roomList.length} rooms for facility ${facility.name}`,
       );
 
       res.json({
@@ -1172,7 +1195,7 @@ app.post(
         error: error.message,
       });
     }
-  }
+  },
 );
 
 // New endpoint: Revenue report with date range
@@ -1201,15 +1224,18 @@ app.post(
 
       const facility = facilities[facilityId];
       console.log(
-        `💰 Generating revenue report for facility: ${facility.name} (${fromDate} - ${toDate})`
+        `💰 Generating revenue report for facility: ${facility.name} (${fromDate} - ${toDate})`,
       );
 
       // Login - use returned cookies locally
-      const revenueLoginResult = await performLogin(facility.email, facility.password);
-      if (!revenueLoginResult.success) {
-        return res.status(500).json({ success: false, error: "Login failed" });
+      const { success: revenueLoginOk, cookies: revenueCookies, error: revenueLoginErr } = await loginAndResolveCookies(facility);
+      if (!revenueLoginOk) {
+        return res.status(401).json({
+          success: false,
+          error: revenueLoginErr,
+          facility: { id: facilityId, name: facility.name },
+        });
       }
-      const revenueCookies = revenueLoginResult.cookies;
 
       // Fetch bookings for the date range with TypeSeachDate=0 (check-in/arrival)
       const searchTypes = [
@@ -1273,7 +1299,7 @@ app.post(
               allBookings = allBookings.concat(bookingsWithMeta);
 
               console.log(
-                `  📄 Page ${currentPage}/${totalPages}: ${parsedData.bookings.length} bookings`
+                `  📄 Page ${currentPage}/${totalPages}: ${parsedData.bookings.length} bookings`,
               );
             }
 
@@ -1300,7 +1326,7 @@ app.post(
       allBookings.forEach((booking) => {
         const source = booking.source || "Khách lẻ";
         const totalAmount = parseFloat(
-          booking.totalAmount.replace(/[^\d.-]/g, "") || 0
+          booking.totalAmount.replace(/[^\d.-]/g, "") || 0,
         );
 
         if (!revenueByOTA[source]) {
@@ -1343,7 +1369,7 @@ app.post(
         error: error.message,
       });
     }
-  }
+  },
 );
 
 // Helper function to parse booking data from HTML
@@ -1357,7 +1383,7 @@ function parseBookingData(html) {
 
     // Try to match the DataTables pagination block
     const paginateBlockMatch = html.match(
-      /<div[^>]*class="[^"]*dataTables_paginate[^"]*"[^>]*>([\s\S]*?)<\/div>/i
+      /<div[^>]*class="[^"]*dataTables_paginate[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
     );
     if (paginateBlockMatch) {
       const paginateHtml = paginateBlockMatch[1];
@@ -1365,11 +1391,11 @@ function parseBookingData(html) {
       // Find all page number links
       const pageNumberMatches = [
         ...paginateHtml.matchAll(
-          /<a[^>]*class="[^"]*paginate_button(?!.*current)[^"]*"[^>]*href="[^"]*p=(\d+)[^"]*"[^>]*>(\d+)<\/a>/gi
+          /<a[^>]*class="[^"]*paginate_button(?!.*current)[^"]*"[^>]*href="[^"]*p=(\d+)[^"]*"[^>]*>(\d+)<\/a>/gi,
         ),
       ];
       const currentPageMatch = paginateHtml.match(
-        /<a[^>]*class="[^"]*paginate_button current[^"]*"[^>]*href="[^"]*p=(\d+)[^"]*"[^>]*>(\d+)<\/a>/i
+        /<a[^>]*class="[^"]*paginate_button current[^"]*"[^>]*href="[^"]*p=(\d+)[^"]*"[^>]*>(\d+)<\/a>/i,
       );
 
       // Get all page numbers
@@ -1385,12 +1411,12 @@ function parseBookingData(html) {
         "📄 Pagination found (DataTables):",
         currentPage,
         "/",
-        totalPages
+        totalPages,
       );
     } else {
       // Fallback: Try to match old pagination text
       const paginationMatch = html.match(
-        /Trang\s+(\d+)\s+\/\s+(\d+)|Page\s+(\d+)\s+of\s+(\d+)/i
+        /Trang\s+(\d+)\s+\/\s+(\d+)|Page\s+(\d+)\s+of\s+(\d+)/i,
       );
       if (paginationMatch) {
         currentPage = parseInt(paginationMatch[1] || paginationMatch[3]) || 1;
@@ -1399,14 +1425,14 @@ function parseBookingData(html) {
           "📄 Pagination found (text):",
           currentPage,
           "/",
-          totalPages
+          totalPages,
         );
       }
     }
 
     // Find the main booking table
     const bookingTableMatch = html.match(
-      /<table[^>]*class="[^"]*card-table[^"]*"[^>]*>([\s\S]*?)<\/table>/i
+      /<table[^>]*class="[^"]*card-table[^"]*"[^>]*>([\s\S]*?)<\/table>/i,
     );
 
     if (!bookingTableMatch) {
@@ -1522,10 +1548,10 @@ function extractCalendarOptionData(html) {
   try {
     // Look for CalendarOption.ListRoom and CalendarOption.BookingGroup in the script
     const listRoomMatch = html.match(
-      /CalendarOption\.ListRoom\s*=\s*(\[[\s\S]*?\]);/
+      /CalendarOption\.ListRoom\s*=\s*(\[[\s\S]*?\]);/,
     );
     const bookingGroupMatch = html.match(
-      /CalendarOption\.BookingGroup\s*=\s*(\[[\s\S]*?\]);/
+      /CalendarOption\.BookingGroup\s*=\s*(\[[\s\S]*?\]);/,
     );
 
     let listRoom = [];
@@ -1550,7 +1576,7 @@ function extractCalendarOptionData(html) {
         console.log(
           "✅ Extracted BookingGroup data:",
           bookingGroup.length,
-          "bookings"
+          "bookings",
         );
       } catch (e) {
         console.warn("⚠️ Failed to parse BookingGroup:", e.message);
@@ -1581,16 +1607,16 @@ app.listen(PORT, HOST, () => {
   console.log("   POST /api/login                     - Login to OTA system");
   console.log("   GET  /api/report                    - Fetch report data");
   console.log(
-    "   POST /api/login-and-fetch           - Combined login + fetch"
+    "   POST /api/login-and-fetch           - Combined login + fetch",
   );
   console.log(
-    "   POST /api/login-and-fetch-facility  - Login + fetch by facility"
+    "   POST /api/login-and-fetch-facility  - Login + fetch by facility",
   );
   console.log(
-    "   GET  /api/facilities                - Get facility information"
+    "   GET  /api/facilities                - Get facility information",
   );
   console.log(
-    "   POST /api/list-rooms                - Get room list by facility"
+    "   POST /api/list-rooms                - Get room list by facility",
   );
   console.log("");
   console.log("💡 Usage examples:");
@@ -1598,11 +1624,11 @@ app.listen(PORT, HOST, () => {
   console.log("   curl http://localhost:3001/api/report");
   console.log("   curl -X POST http://localhost:3001/api/login-and-fetch");
   console.log(
-    "   curl -X POST http://localhost:3001/api/login-and-fetch-facility"
+    "   curl -X POST http://localhost:3001/api/login-and-fetch-facility",
   );
   console.log("   curl http://localhost:3001/api/facilities");
   console.log(
-    '   curl -X POST -H "Content-Type: application/json" -d \'{"facilityId":"era_apartment_3"}\' http://localhost:3001/api/list-rooms'
+    '   curl -X POST -H "Content-Type: application/json" -d \'{"facilityId":"era_apartment_3"}\' http://localhost:3001/api/list-rooms',
   );
 });
 
