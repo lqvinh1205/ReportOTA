@@ -13,10 +13,9 @@ services:
       - .env
     networks:
       - report-ota-network
-    # Optional: Mount volume for logs
     volumes:
       - ./logs:/app/logs
-    # Resource limits (adjust based on your server)
+      - ./config:/app/config
     deploy:
       resources:
         limits:
@@ -31,6 +30,29 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  booking-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: booking-monitor
+    restart: unless-stopped
+    command: ["node", "booking-monitor.js"]
+    env_file:
+      - .env
+    networks:
+      - report-ota-network
+    volumes:
+      - ./config:/app/config
+      - ./snapshots:/app/snapshots
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
 
 networks:
   report-ota-network:
