@@ -1,7 +1,5 @@
 // ===== CORE BOOKING DATA FETCHING LOGIC =====
 
-const { getTextPayment } = require("./utils/booking-utils");
-
 // Node.js server endpoints - Auto detect based on current location
 const API_BASE_URL = window.location.protocol + "//" + window.location.host;
 
@@ -474,6 +472,21 @@ function getTypeClass(searchType) {
   if (typeLower.includes("đi")) return "departing";
   if (typeLower.includes("lưu")) return "staying";
   return "default";
+}
+
+function getTextPayment(source) {
+  if (!source) return "thu khách";
+  const config = {
+    "Booking.com": "thu khách",
+    "Khách lẻ": "thu khách",
+    Ctrip: `${source} đã thanh toán`,
+    DayLaDau: `${source} đã thanh toán`,
+    Expedia: `${source} đã thanh toán`,
+    Agoda: `${source} đã thanh toán`,
+    Go2Joy: `${source} đã thanh toán`,
+    "Airbnb XML": `${source} đã thanh toán`,
+  };
+  return config[source] || `${source} đã thanh toán`;
 }
 
 // ===== UTILITY FUNCTIONS =====
