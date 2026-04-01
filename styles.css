@@ -103,6 +103,14 @@ body {
   font-weight: 500;
 }
 
+.total-rooms-badge {
+  background: rgba(255, 255, 255, 0.2);
+  padding: 0.5rem 1rem;
+  border-radius: 20px;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
 .logout-btn {
   background: rgba(255, 255, 255, 0.9);
   color: var(--primary-color);

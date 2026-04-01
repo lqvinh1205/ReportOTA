@@ -647,6 +647,9 @@ async function generateReportWithRoomList(bookings, facilityId) {
         "rooms"
       );
 
+      // Refresh total rooms badge after successful list-rooms call
+      loadRoomCounts();
+
       // Extract room numbers for vacant room calculation
       const allRoomNumbers = roomData.rooms.map((room) => room.roomNumber);
 
@@ -1027,6 +1030,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (!isAuthenticated) return;
 
   await loadFacilities();
+  await loadRoomCounts();
 
   // Set default date range to current day
   const today = new Date();
@@ -1034,6 +1038,27 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("fromDate").valueAsDate = today;
   document.getElementById("toDate").valueAsDate = today;
 });
+
+// Load cached room counts and update header badge
+async function loadRoomCounts() {
+  try {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/room-counts`);
+    const data = await response.json();
+    if (data.success) {
+      updateRoomCountBadge(data.totalRooms);
+    }
+  } catch (error) {
+    // Non-critical, silently ignore
+  }
+}
+
+function updateRoomCountBadge(total) {
+  const badge = document.getElementById("totalRoomsBadge");
+  const count = document.getElementById("totalRoomsCount");
+  if (!badge || !count) return;
+  count.textContent = total;
+  badge.style.display = total > 0 ? "inline-flex" : "none";
+}
 
 // Load facilities from server
 async function loadFacilities() {

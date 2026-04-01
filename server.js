@@ -1,6 +1,8 @@
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
+const fs = require("fs");
+const path = require("path");
 const { URLSearchParams } = require("url");
 const dayjs = require("dayjs");
 const bcrypt = require("bcrypt");
@@ -1177,6 +1179,26 @@ app.post(
         `✅ Found ${roomList.length} rooms for facility ${facility.name}`,
       );
 
+      // Save room count to user's facilities_count array in users.json
+      try {
+        const usersPath = path.join(__dirname, "config/users.json");
+        const usersData = JSON.parse(fs.readFileSync(usersPath, "utf8"));
+        const userIndex = usersData.users.findIndex((u) => u.id === req.user.id);
+        if (userIndex !== -1) {
+          const targetUser = usersData.users[userIndex];
+          const facilityIndex = (targetUser.facilities || []).indexOf(facilityId);
+          if (facilityIndex !== -1) {
+            if (!Array.isArray(targetUser.facilities_count)) {
+              targetUser.facilities_count = new Array(targetUser.facilities.length).fill(null);
+            }
+            targetUser.facilities_count[facilityIndex] = roomList.length;
+            fs.writeFileSync(usersPath, JSON.stringify(usersData, null, 2), "utf8");
+          }
+        }
+      } catch (saveErr) {
+        console.error("⚠️ Failed to save room count:", saveErr.message);
+      }
+
       res.json({
         success: true,
         facility: {
@@ -1197,6 +1219,32 @@ app.post(
     }
   },
 );
+
+// Get cached room counts for the current user
+app.get("/api/room-counts", authenticateToken, (req, res) => {
+  const allUsers = loadUsers();
+  const user = allUsers.find((u) => u.id === req.user.id);
+  if (!user) {
+    return res.status(404).json({ success: false, error: "User not found" });
+  }
+
+  const userFacilities = user.facilities || [];
+  const facilitiesCount = user.facilities_count || [];
+
+  const facilityData = userFacilities.map((fid, idx) => ({
+    facilityId: fid,
+    name: facilities[fid]?.name || fid,
+    roomCount: facilitiesCount[idx] ?? null,
+  }));
+
+  const totalRooms = facilityData.reduce((sum, f) => sum + (f.roomCount || 0), 0);
+
+  res.json({
+    success: true,
+    totalRooms,
+    facilities: facilityData,
+  });
+});
 
 // New endpoint: Revenue report with date range
 app.post(
@@ -1616,7 +1664,10 @@ app.listen(PORT, HOST, () => {
     "   GET  /api/facilities                - Get facility information",
   );
   console.log(
-    "   POST /api/list-rooms                - Get room list by facility",
+    "   POST /api/list-rooms                - Get room list by facility (auto-saves room count)",
+  );
+  console.log(
+    "   GET  /api/room-counts               - Get cached room counts per facility for current user",
   );
   console.log("");
   console.log("💡 Usage examples:");
