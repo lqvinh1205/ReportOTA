@@ -299,7 +299,7 @@ function parseBookings(html) {
           checkinTime: extractText(cells[9]),
           checkoutDate: extractText(cells[10]),
           checkoutTime: extractText(cells[11]),
-          totalAmount: extractText(cells[14]).replace(/[^\d,.-]/g, "").trim(),
+          totalAmount: extractText(cells[15]).replace(/[^\d,.-]/g, "").trim(),
           paid: extractText(cells[13]).replace(/[^\d,.-]/g, "").trim(),
           notes: cells.length > 16 ? extractText(cells[16]) : "",
         });
