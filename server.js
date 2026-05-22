@@ -1528,9 +1528,9 @@ function parseBookingData(html) {
             checkinTime: extractTextFromCell(cells[9]),
             checkoutDate: extractTextFromCell(cells[10]),
             checkoutTime: extractTextFromCell(cells[11]),
-            totalAmount: extractTextFromCell(cells[14]),
+            totalAmount: extractTextFromCell(cells[15]),
             paid: extractTextFromCell(cells[13]),
-            balance: extractTextFromCell(cells[14]),
+            balance: extractTextFromCell(cells[15]),
             notes: cells.length > 16 ? extractTextFromCell(cells[16]) : "",
           };
 
