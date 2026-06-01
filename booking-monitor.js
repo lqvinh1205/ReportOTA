@@ -1,12 +1,15 @@
 /**
  * booking-monitor.js
- * Service độc lập theo dõi booking mới và gửi thông báo Telegram.
+ * Single process - theo dõi booking cho TẤT CẢ users đồng thời.
  *
- * Cấu hình (thêm vào .env):
- *   TELEGRAM_BOT_TOKEN=<bot_token>
- *   TELEGRAM_CHAT_ID=<chat_id>
- *   MONITOR_INTERVAL_MS=120000   (mặc định: 2 phút)
- *   MONITOR_DATE_RANGE_DAYS=7    (mặc định: 7 ngày kể từ hôm nay)
+ * Config per-user lấy từ config/users.json:
+ *   telegram_bot_token  - bot token riêng của từng user
+ *   telegram_chat_id    - chat ID Telegram của từng user
+ *   facilities          - danh sách facility ID cần theo dõi
+ *
+ * Env vars (dùng chung, khai báo trong .env):
+ *   OTA_BASE_URL        - (mặc định: https://id.bluejaypms.com)
+ *   MONITOR_INTERVAL_MS - (mặc định: 180000 = 3 phút)
  */
 
 require("dotenv").config();
@@ -17,22 +20,16 @@ const { URLSearchParams } = require("url");
 const dayjs = require("dayjs");
 const customParseFormat = require("dayjs/plugin/customParseFormat");
 dayjs.extend(customParseFormat);
-  
-// ─── Config ────────────────────────────────────────────────────────────────
+
+// ─── Shared config ──────────────────────────────────────────────────────────
 const BASE_URL = process.env.OTA_BASE_URL || "https://id.bluejaypms.com";
 const LOGIN_PATH = `${BASE_URL}/login`;
 const RESERVATION_PATH = `${BASE_URL}/app/Reservation`;
-
-const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
-const MONITOR_INTERVAL = parseInt(process.env.MONITOR_INTERVAL_MS) || 2 * 60 * 1000;
-const MONITOR_FACILITIES = process.env.MONITOR_FACILITIES
-  ? process.env.MONITOR_FACILITIES.split(",").map((s) => s.trim()).filter(Boolean)
-  : [];
+const MONITOR_INTERVAL = parseInt(process.env.MONITOR_INTERVAL_MS) || 3 * 60 * 1000;
 
 const { getTextPayment } = require("./utils/booking-utils");
 
-const SNAPSHOTS_DIR = path.join(__dirname, "snapshots");
+const USERS_FILE = path.join(__dirname, "config", "users.json");
 const FACILITIES_FILE = path.join(__dirname, "config", "facilities.json");
 
 const SEARCH_TYPES = [
@@ -48,10 +45,22 @@ const HTTP_HEADERS = {
   "Cache-Control": "no-cache",
 };
 
-// ─── Utilities ─────────────────────────────────────────────────────────────
-function log(msg) {
+// ─── User loading ────────────────────────────────────────────────────────────
+function loadActiveUsers() {
+  try {
+    const { users } = JSON.parse(fs.readFileSync(USERS_FILE, "utf-8"));
+    return users.filter((u) => u.active && u.telegram_bot_token && u.telegram_chat_id && u.facilities?.length);
+  } catch (e) {
+    log(`❌ Không đọc được users.json: ${e.message}`);
+    return [];
+  }
+}
+
+// ─── Utilities ───────────────────────────────────────────────────────────────
+function log(msg, username) {
   const ts = new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" });
-  console.log(`[${ts}] ${msg}`);
+  const prefix = username ? `[${username}]` : "";
+  console.log(`[${ts}]${prefix} ${msg}`);
 }
 
 function sleep(ms) {
@@ -65,19 +74,16 @@ function formatDate(date) {
   return `${d}/${m}/${y}`;
 }
 
-/** Tạo unique key để nhận dạng booking */
 function bookingKey(b) {
-  return `${b.bookingCode}|${b.otaReference}|${b.facilityId}`;
+  return `${b.bookingCode}|${b.otaReference}`;
 }
 
-/** Trích số phòng từ tên phòng */
 function extractRoomNumber(roomName) {
   if (!roomName) return roomName;
   const m = roomName.match(/(?:P?\s*)?(\d+)\s*$/i);
   return m ? m[1] : roomName;
 }
 
-// ─── Snapshot I/O ───────────────────────────────────────────────────────────
 function getTodayKey() {
   const now = new Date();
   const y = now.getFullYear();
@@ -86,41 +92,45 @@ function getTodayKey() {
   return `${y}-${m}-${d}`;
 }
 
-function getTodaySnapshotFile() {
-  if (!fs.existsSync(SNAPSHOTS_DIR)) fs.mkdirSync(SNAPSHOTS_DIR, { recursive: true });
-  return path.join(SNAPSHOTS_DIR, `snapshot_${getTodayKey()}.json`);
+// ─── Snapshot I/O (per-user) ─────────────────────────────────────────────────
+function getSnapshotDir(username) {
+  return path.join(__dirname, "snapshots", username);
 }
 
-function loadSnapshot() {
-  const file = getTodaySnapshotFile();
+function getSnapshotFile(username) {
+  const dir = getSnapshotDir(username);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `snapshot_${getTodayKey()}.json`);
+}
+
+function loadSnapshot(username) {
+  const file = getSnapshotFile(username);
   try {
     if (fs.existsSync(file)) {
-      const raw = fs.readFileSync(file, "utf-8");
-      return JSON.parse(raw);
+      return JSON.parse(fs.readFileSync(file, "utf-8"));
     }
   } catch (e) {
-    log(`⚠️  Không đọc được snapshot: ${e.message}`);
+    log(`⚠️  Không đọc được snapshot: ${e.message}`, username);
   }
   return { lastUpdated: null, date: getTodayKey(), totalBookings: 0, bookings: [], pageTracker: {}, bookingKeys: [] };
 }
 
-function saveSnapshot(snapshot) {
-  const file = getTodaySnapshotFile();
+function saveSnapshot(snapshot, username) {
+  const file = getSnapshotFile(username);
   try {
     fs.writeFileSync(file, JSON.stringify(snapshot, null, 2), "utf-8");
   } catch (e) {
-    log(`❌ Không ghi được snapshot: ${e.message}`);
+    log(`❌ Không ghi được snapshot: ${e.message}`, username);
   }
 }
 
-// ─── Facilities ─────────────────────────────────────────────────────────────
-function loadFacilities() {
+// ─── Facilities (per-user) ───────────────────────────────────────────────────
+function loadUserFacilities(facilityIds) {
   try {
     const raw = fs.readFileSync(FACILITIES_FILE, "utf-8");
     const all = JSON.parse(raw).facilities || {};
-    if (MONITOR_FACILITIES.length === 0) return all;
     return Object.fromEntries(
-      Object.entries(all).filter(([id]) => MONITOR_FACILITIES.includes(id))
+      Object.entries(all).filter(([id]) => facilityIds.includes(id))
     );
   } catch (e) {
     log(`❌ Không đọc được facilities.json: ${e.message}`);
@@ -128,7 +138,7 @@ function loadFacilities() {
   }
 }
 
-// ─── Cookie helpers ─────────────────────────────────────────────────────────
+// ─── Cookie helpers ──────────────────────────────────────────────────────────
 function extractCookies(response) {
   const cookies = response.headers["set-cookie"];
   if (cookies) return cookies.map((c) => c.split(";")[0]).join("; ");
@@ -169,7 +179,7 @@ function extractHiddenField(html, name) {
   return m ? m[1] : "";
 }
 
-// ─── OTA Login ──────────────────────────────────────────────────────────────
+// ─── OTA Login ───────────────────────────────────────────────────────────────
 async function performLogin(email, password) {
   try {
     const pageResp = await axios.get(LOGIN_PATH, { headers: HTTP_HEADERS });
@@ -248,7 +258,7 @@ async function loginFacility(facility) {
   return { success: true, cookies: result.cookies };
 }
 
-// ─── Booking Parser ─────────────────────────────────────────────────────────
+// ─── Booking Parser ──────────────────────────────────────────────────────────
 function extractText(cellHtml) {
   if (!cellHtml) return "";
   return cellHtml
@@ -310,7 +320,7 @@ function parseBookings(html) {
   return { success: true, currentPage, totalPages, bookings };
 }
 
-// ─── Fetch single page ───────────────────────────────────────────────────────
+// ─── Fetch single page ────────────────────────────────────────────────────────
 async function fetchPage(cookies, roomType, searchType, page) {
   const today = formatDate(new Date());
   const params = new URLSearchParams({
@@ -327,9 +337,6 @@ async function fetchPage(cookies, roomType, searchType, page) {
     p: page,
   });
 
-  // console.log(`${dayjs().format("YYYY-MM-DD HH:mm:ss")} - ${RESERVATION_PATH}?${params}`);
-  
-
   const resp = await axios.get(`${RESERVATION_PATH}?${params}`, {
     headers: { ...HTTP_HEADERS, Referer: `${BASE_URL}/`, Cookie: cookies },
     maxRedirects: 0,
@@ -340,13 +347,13 @@ async function fetchPage(cookies, roomType, searchType, page) {
   return { success: true, ...parseBookings(resp.data) };
 }
 
-// ─── Fetch ALL pages for a facility ─────────────────────────────────────────
-async function fetchAllBookings(facilityId, facility) {
-  log(`📥 Lấy toàn bộ booking cho ${facility.name}...`);
+// ─── Fetch ALL pages for a facility ──────────────────────────────────────────
+async function fetchAllBookings(facilityId, facility, username) {
+  log(`📥 Lấy toàn bộ booking cho ${facility.name}...`, username);
 
   const loginResult = await loginFacility(facility);
   if (!loginResult.success) {
-    log(`❌ Đăng nhập thất bại (${facility.name}): ${loginResult.error}`);
+    log(`❌ Đăng nhập thất bại (${facility.name}): ${loginResult.error}`, username);
     return { success: false, error: loginResult.error };
   }
 
@@ -364,7 +371,7 @@ async function fetchAllBookings(facilityId, facility) {
       do {
         const result = await fetchPage(cookies, roomType, searchType, currentPage);
         if (!result.success) {
-          log(`  ⚠️  ${searchType.name} trang ${currentPage}: ${result.error}`);
+          log(`  ⚠️  ${searchType.name} trang ${currentPage}: ${result.error}`, username);
           break;
         }
         totalPages = result.totalPages;
@@ -378,7 +385,7 @@ async function fetchAllBookings(facilityId, facility) {
           }
         }
 
-        log(`  ✅ ${searchType.name} trang ${currentPage}/${totalPages}: ${result.bookings.length} booking`);
+        log(`  ✅ ${searchType.name} trang ${currentPage}/${totalPages}: ${result.bookings.length} booking`, username);
         if (totalPages === 1 || currentPage >= totalPages) break;
 
         currentPage++;
@@ -391,25 +398,25 @@ async function fetchAllBookings(facilityId, facility) {
     await sleep(500);
   }
 
-  log(`✅ ${facility.name}: tổng ${allBookings.length} booking`);
+  log(`✅ ${facility.name}: tổng ${allBookings.length} booking`, username);
   return { success: true, bookings: allBookings, pageTracker };
 }
 
-// ─── Telegram ───────────────────────────────────────────────────────────────
-async function sendTelegram(message) {
-  if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) {
-    log("⚠️  Chưa cấu hình TELEGRAM_BOT_TOKEN hoặc TELEGRAM_CHAT_ID");
+// ─── Telegram (per-user) ──────────────────────────────────────────────────────
+async function sendTelegram(message, botToken, chatId, username) {
+  if (!botToken || !chatId) {
+    log("⚠️  Thiếu telegram_bot_token hoặc telegram_chat_id", username);
     return;
   }
   try {
-    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-      chat_id: TELEGRAM_CHAT_ID,
+    await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      chat_id: chatId,
       text: message,
       parse_mode: "HTML",
     });
-    log("📨 Đã gửi Telegram");
+    log("📨 Đã gửi Telegram", username);
   } catch (e) {
-    log(`❌ Gửi Telegram thất bại: ${e.message}`);
+    log(`❌ Gửi Telegram thất bại: ${e.message}`, username);
   }
 }
 
@@ -431,14 +438,14 @@ function formatBookingMessage(b) {
   return `P${room} - ${guestName} ${code} - ${nights} đêm - ${paymentText} ${totalAmount}`;
 }
 
-// ─── Snapshot builder ────────────────────────────────────────────────────────
-async function buildSnapshot() {
+// ─── Snapshot builder (per-user) ─────────────────────────────────────────────
+async function buildUserSnapshot(user) {
   const today = getTodayKey();
-  log(`🔄 Đang tạo snapshot ngày ${today}...`);
+  log(`🔄 Đang tạo snapshot ngày ${today}...`, user.username);
 
-  const facilities = loadFacilities();
+  const facilities = loadUserFacilities(user.facilities);
   if (Object.keys(facilities).length === 0) {
-    log("❌ Không tìm thấy cấu hình facilities");
+    log("❌ Không tìm thấy cấu hình facilities", user.username);
     return false;
   }
 
@@ -453,42 +460,48 @@ async function buildSnapshot() {
 
   let errorCount = 0;
   for (const [facilityId, facility] of Object.entries(facilities)) {
-    const result = await fetchAllBookings(facilityId, facility);
+    const result = await fetchAllBookings(facilityId, facility, user.username);
     if (result.success) {
       snapshot.bookings.push(...result.bookings);
       Object.assign(snapshot.pageTracker, result.pageTracker);
     } else {
       errorCount++;
-      await sendTelegram(`⚠️ <b>Lỗi tạo snapshot</b>\nFacility: ${facility.name}\nLỗi: ${result.error}`);
+      await sendTelegram(
+        `⚠️ <b>Lỗi tạo snapshot</b>\nFacility: ${facility.name}\nLỗi: ${result.error}`,
+        user.telegram_bot_token, user.telegram_chat_id, user.username
+      );
     }
     await sleep(1000);
   }
 
   snapshot.totalBookings = snapshot.bookings.length;
   snapshot.bookingKeys = snapshot.bookings.map(bookingKey);
-  saveSnapshot(snapshot);
+  saveSnapshot(snapshot, user.username);
 
-  log(`✅ Snapshot ${today} hoàn tất: ${snapshot.totalBookings} booking (${errorCount} lỗi)`);
+  log(`✅ Snapshot ${today} hoàn tất: ${snapshot.totalBookings} booking (${errorCount} lỗi)`, user.username);
   return true;
 }
 
-// ─── Monitor: check last page (1 facility) ───────────────────────────────────
-async function checkFacility(facilityId, facility, snapshot) {
+// ─── Monitor: check last page (1 facility) ────────────────────────────────────
+async function checkFacility(facilityId, facility, snapshot, user) {
   const facilityNewBookings = [];
   const pageTrackerUpdates = {};
-  const seenKeys = new Set(snapshot.bookingKeys); // dedup trong cùng facility
+  const seenKeys = new Set(snapshot.bookingKeys);
 
   let cookies;
   try {
     const loginResult = await loginFacility(facility);
     if (!loginResult.success) {
-      log(`⚠️  Không đăng nhập được ${facility.name}: ${loginResult.error}`);
-      await sendTelegram(`⚠️ <b>Lỗi kết nối</b>\nFacility: ${facility.name}\nLỗi: ${loginResult.error}\nĐang thử lại sau...`);
+      log(`⚠️  Không đăng nhập được ${facility.name}: ${loginResult.error}`, user.username);
+      await sendTelegram(
+        `⚠️ <b>Lỗi kết nối</b>\nFacility: ${facility.name}\nLỗi: ${loginResult.error}\nĐang thử lại sau...`,
+        user.telegram_bot_token, user.telegram_chat_id, user.username
+      );
       return { newBookings: [], pageTrackerUpdates: {} };
     }
     cookies = loginResult.cookies;
   } catch (e) {
-    log(`❌ Exception login ${facility.name}: ${e.message}`);
+    log(`❌ Exception login ${facility.name}: ${e.message}`, user.username);
     return { newBookings: [], pageTrackerUpdates: {} };
   }
 
@@ -500,7 +513,7 @@ async function checkFacility(facilityId, facility, snapshot) {
       try {
         const lastPageResult = await fetchPage(cookies, roomType, searchType, prevTotalPages);
         if (!lastPageResult.success) {
-          log(`  ⚠️  [${facility.name}] Lỗi lấy trang ${prevTotalPages} (${searchType.name}): ${lastPageResult.error}`);
+          log(`  ⚠️  [${facility.name}] Lỗi lấy trang ${prevTotalPages} (${searchType.name}): ${lastPageResult.error}`, user.username);
           continue;
         }
 
@@ -508,7 +521,7 @@ async function checkFacility(facilityId, facility, snapshot) {
         const pagesToCheck = new Set([currentTotalPages]);
 
         if (currentTotalPages > prevTotalPages) {
-          log(`  📈 [${facility.name}] ${searchType.name} tăng trang: ${prevTotalPages} → ${currentTotalPages}`);
+          log(`  📈 [${facility.name}] ${searchType.name} tăng trang: ${prevTotalPages} → ${currentTotalPages}`, user.username);
           pagesToCheck.add(prevTotalPages);
         }
 
@@ -526,7 +539,7 @@ async function checkFacility(facilityId, facility, snapshot) {
             if (!seenKeys.has(key)) {
               seenKeys.add(key);
               facilityNewBookings.push(enriched);
-              log(`  🆕 [${facility.name}] ${enriched.guestName} - ${enriched.room} (${enriched.checkinDate}→${enriched.checkoutDate})`);
+              log(`  🆕 [${facility.name}] ${enriched.guestName} - ${enriched.room} (${enriched.checkinDate}→${enriched.checkoutDate})`, user.username);
             }
           }
         }
@@ -537,7 +550,7 @@ async function checkFacility(facilityId, facility, snapshot) {
 
         await sleep(200);
       } catch (e) {
-        log(`  ❌ Exception ${searchType.name} (${facility.name}): ${e.message}`);
+        log(`  ❌ Exception ${searchType.name} (${facility.name}): ${e.message}`, user.username);
       }
     }
     await sleep(300);
@@ -546,19 +559,17 @@ async function checkFacility(facilityId, facility, snapshot) {
   return { newBookings: facilityNewBookings, pageTrackerUpdates };
 }
 
-// ─── Monitor: check all facilities in parallel ────────────────────────────────
-async function checkLastPages(snapshot) {
-  const facilities = loadFacilities();
-  log(`🚀 Kiểm tra song song ${Object.keys(facilities).length} cơ sở...`);
+// ─── Monitor: check all facilities for one user ───────────────────────────────
+async function checkUserBookings(user, snapshot) {
+  const facilities = loadUserFacilities(user.facilities);
+  log(`🚀 Kiểm tra song song ${Object.keys(facilities).length} cơ sở...`, user.username);
 
-  // Chạy tất cả facility song song
   const results = await Promise.all(
     Object.entries(facilities).map(([facilityId, facility]) =>
-      checkFacility(facilityId, facility, snapshot)
+      checkFacility(facilityId, facility, snapshot, user)
     )
   );
 
-  // Gom kết quả và cập nhật snapshot một lần duy nhất
   const allNewBookings = [];
   const updatedPageTracker = { ...snapshot.pageTracker };
 
@@ -578,108 +589,126 @@ async function checkLastPages(snapshot) {
     snapshot.pageTracker = updatedPageTracker;
     snapshot.totalBookings = snapshot.bookings.length;
     snapshot.lastUpdated = new Date().toISOString();
-    saveSnapshot(snapshot);
+    saveSnapshot(snapshot, user.username);
   }
 
   return allNewBookings;
 }
 
-// ─── Main loop ───────────────────────────────────────────────────────────────
-async function monitorLoop() {
-  let snapshot = loadSnapshot();
-
-  // Nếu chưa có snapshot của ngày hôm nay → tạo mới
-  if (!snapshot.lastUpdated || snapshot.date !== getTodayKey()) {
-    log(`📝 Chưa có snapshot ngày ${getTodayKey()}, đang tạo...`);
-    const ok = await buildSnapshot();
-    if (!ok) {
-      log("❌ Tạo snapshot thất bại. Thử lại sau 1 phút...");
-      setTimeout(monitorLoop, 60_000);
-      return;
-    }
-    snapshot = loadSnapshot();
-    await sendTelegram(`✅ <b>ReportOTA Monitor - ${snapshot.date}</b>\nSnapshot: ${snapshot.totalBookings} booking\nKiểm tra mỗi: ${MONITOR_INTERVAL / 1000}s`);
+// ─── Notify new bookings for one user ────────────────────────────────────────
+async function notifyNewBookings(user, newBookings) {
+  if (newBookings.length === 0) {
+    log("✅ Không có booking mới", user.username);
+    return;
   }
 
-  log(`\n🔍 Bắt đầu theo dõi booking mới (mỗi ${MONITOR_INTERVAL / 1000}s)...`);
-  log(`   Snapshot ngày ${snapshot.date}: ${snapshot.totalBookings} booking`);
+  const today = formatDate(new Date());
+  const toNotify = newBookings.filter((b) => {
+    if (b.checkinDate !== today) return false;
+    if (/gia\s*h[aạ]n/i.test(b.guestName || "")) return false;
+    return true;
+  });
+
+  const skipped = newBookings.length - toNotify.length;
+  if (skipped > 0) log(`   ↩️  Bỏ qua ${skipped} booking (không phải hôm nay hoặc gia hạn)`, user.username);
+
+  if (toNotify.length === 0) {
+    log(`🎉 ${newBookings.length} booking mới (không có booking nào cần thông báo hôm nay)`, user.username);
+    return;
+  }
+
+  const byFacility = {};
+  for (const b of toNotify) {
+    if (!byFacility[b.facilityName]) byFacility[b.facilityName] = [];
+    byFacility[b.facilityName].push(b);
+  }
+
+  for (const [facilityName, bookings] of Object.entries(byFacility)) {
+    const lines = bookings.map(formatBookingMessage).join("\n");
+    const msg = `🔔 <b>Booking mới - ${facilityName}</b>\n\n${lines}`;
+    await sendTelegram(msg, user.telegram_bot_token, user.telegram_chat_id, user.username);
+  }
+
+  log(`🎉 ${newBookings.length} booking mới (gửi Telegram: ${toNotify.length})`, user.username);
+}
+
+// ─── Per-user monitor loop ────────────────────────────────────────────────────
+async function runUserMonitor(user, snapshots) {
+  // Init snapshot nếu chưa có hoặc sang ngày mới
+  if (!snapshots[user.username]?.lastUpdated || snapshots[user.username].date !== getTodayKey()) {
+    log(`📝 Chưa có snapshot ngày ${getTodayKey()}, đang tạo...`, user.username);
+    const ok = await buildUserSnapshot(user);
+    if (!ok) {
+      log("❌ Tạo snapshot thất bại, bỏ qua user này trong tick này", user.username);
+      return;
+    }
+    snapshots[user.username] = loadSnapshot(user.username);
+    await sendTelegram(
+      `✅ <b>ReportOTA Monitor - ${snapshots[user.username].date}</b>\nSnapshot: ${snapshots[user.username].totalBookings} booking\nKiểm tra mỗi: ${MONITOR_INTERVAL / 1000}s`,
+      user.telegram_bot_token, user.telegram_chat_id, user.username
+    );
+  }
+
+  try {
+    const newBookings = await checkUserBookings(user, snapshots[user.username]);
+    await notifyNewBookings(user, newBookings);
+  } catch (e) {
+    log(`❌ Lỗi trong tick: ${e.message}`, user.username);
+    await sendTelegram(
+      `❌ <b>Lỗi Monitor</b>\n${e.message}\nTự động thử lại...`,
+      user.telegram_bot_token, user.telegram_chat_id, user.username
+    );
+  }
+}
+
+// ─── Main loop ────────────────────────────────────────────────────────────────
+async function monitorLoop() {
+  const users = loadActiveUsers();
+  if (users.length === 0) {
+    log("❌ Không có user nào đủ điều kiện (active=true, telegram_bot_token, telegram_chat_id, facilities).");
+    log("   Kiểm tra config/users.json.");
+    process.exit(1);
+  }
+
+  log(`🚀 Khởi động monitor cho ${users.length} user: ${users.map((u) => u.username).join(", ")}`);
+  log(`   Interval: ${MONITOR_INTERVAL / 1000}s`);
+
+  // snapshots[username] = snapshot object, được cập nhật in-place
+  const snapshots = {};
 
   async function tick() {
-    try {
-      // Nếu sang ngày mới → rebuild snapshot cho ngày hôm nay
-      if (snapshot.date !== getTodayKey()) {
-        log(`🌅 Sang ngày mới (${getTodayKey()}), đang tạo snapshot...`);
-        const ok = await buildSnapshot();
-        if (ok) {
-          snapshot = loadSnapshot();
-          await sendTelegram(`✅ <b>ReportOTA Monitor - ${snapshot.date}</b>\nSnapshot mới: ${snapshot.totalBookings} booking`);
-        }
-        setTimeout(tick, MONITOR_INTERVAL);
-        return;
-      }
-
-      log("⏱  Kiểm tra booking mới...");
-      const newBookings = await checkLastPages(snapshot);
-
-      if (newBookings.length > 0) {
-        const today = formatDate(new Date());
-
-        // Lọc booking đủ điều kiện gửi Telegram:
-        // - checkinDate = hôm nay
-        // - tên khách KHÔNG chứa "gia hạn" (case-insensitive)
-        const toNotify = newBookings.filter((b) => {
-          if (b.checkinDate !== today) return false;
-          if (/gia\s*h[aạ]n/i.test(b.guestName || "")) return false;
-          return true;
-        });
-
-        const skipped = newBookings.length - toNotify.length;
-        if (skipped > 0) log(`   ↩️  Bỏ qua ${skipped} booking (không phải hôm nay hoặc gia hạn) - đã lưu vào JSON`);
-
-        if (toNotify.length > 0) {
-          // Gom nhóm theo facility
-          const byFacility = {};
-          for (const b of toNotify) {
-            if (!byFacility[b.facilityName]) byFacility[b.facilityName] = [];
-            byFacility[b.facilityName].push(b);
-          }
-
-          for (const [facilityName, bookings] of Object.entries(byFacility)) {
-            const lines = bookings.map(formatBookingMessage).join("\n");
-            const msg = `🔔 <b>Booking mới - ${facilityName}</b>\n\n${lines}`;
-            await sendTelegram(msg);
-          }
-
-          log(`🎉 Phát hiện ${newBookings.length} booking mới (gửi Telegram: ${toNotify.length})`);
-        } else {
-          log(`🎉 Phát hiện ${newBookings.length} booking mới (không có booking nào cần thông báo hôm nay)`);
-        }
-      } else {
-        log("✅ Không có booking mới");
-      }
-    } catch (e) {
-      log(`❌ Lỗi trong tick: ${e.message}`);
-      await sendTelegram(`❌ <b>Lỗi Monitor</b>\n${e.message}\nTự động thử lại...`);
-    }
-
+    log(`\n⏱  Tick - kiểm tra booking mới cho tất cả user...`);
+    // Chạy tất cả user song song trong mỗi tick
+    await Promise.all(users.map((user) => runUserMonitor(user, snapshots)));
     setTimeout(tick, MONITOR_INTERVAL);
   }
 
+  // Khởi tạo snapshot cho tất cả user trước khi bắt đầu tick
+  await Promise.all(users.map((user) => runUserMonitor(user, snapshots)));
   setTimeout(tick, MONITOR_INTERVAL);
 }
 
-// ─── CLI commands ────────────────────────────────────────────────────────────
+// ─── CLI commands ─────────────────────────────────────────────────────────────
 const command = process.argv[2];
+const targetUsername = process.argv[3] || null;
 
 if (command === "snapshot") {
-  buildSnapshot().then((ok) => {
-    if (ok) log("✅ Snapshot hoàn tất");
-    else log("❌ Snapshot thất bại");
-    process.exit(ok ? 0 : 1);
-  });
+  (async () => {
+    const users = loadActiveUsers();
+    const targets = targetUsername ? users.filter((u) => u.username === targetUsername) : users;
+    if (targets.length === 0) {
+      log(`❌ Không tìm thấy user "${targetUsername || ""}" trong users.json`);
+      process.exit(1);
+    }
+    let allOk = true;
+    for (const user of targets) {
+      const ok = await buildUserSnapshot(user);
+      if (!ok) allOk = false;
+    }
+    log(allOk ? "✅ Snapshot hoàn tất" : "⚠️  Một số snapshot thất bại");
+    process.exit(allOk ? 0 : 1);
+  })();
 } else {
-  // Mặc định: chạy monitor liên tục
-  log("🚀 Khởi động Booking Monitor Service...");
   monitorLoop().catch((e) => {
     log(`💥 Lỗi nghiêm trọng: ${e.message}`);
     process.exit(1);

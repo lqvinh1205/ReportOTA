@@ -11,6 +11,7 @@
     "monitor": "node booking-monitor.js",
     "monitor:dev": "nodemon booking-monitor.js",
     "monitor:snapshot": "node booking-monitor.js snapshot",
+    "monitor:snapshot:user": "node booking-monitor.js snapshot",
     "install-deps": "npm install express axios cors nodemon bcrypt jsonwebtoken",
     "create-user": "node scripts/manage-users.js",
     "build": "echo 'Static site - no build required'",
