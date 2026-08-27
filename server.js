@@ -15,6 +15,8 @@ const {
   generateToken,
   loadUsers,
   loadFacilities,
+  getUserOtaConfig,
+  saveUserOtaConfig,
 } = require("./middleware/auth");
 
 // Load environment variables
@@ -1641,7 +1643,6 @@ function extractExpediaCollectAmount(noteText) {
 // Helper function to extract CalendarOption data from HTML
 function extractCalendarOptionData(html) {
   try {
-    // Look for CalendarOption.ListRoom and CalendarOption.BookingGroup in the script
     const listRoomMatch = html.match(
       /CalendarOption\.ListRoom\s*=\s*(\[[\s\S]*?\]);/,
     );
@@ -1654,9 +1655,7 @@ function extractCalendarOptionData(html) {
 
     if (listRoomMatch && listRoomMatch[1]) {
       try {
-        // Clean up the JavaScript code and evaluate it safely
-        const listRoomCode = listRoomMatch[1];
-        listRoom = JSON.parse(listRoomCode);
+        listRoom = JSON.parse(listRoomMatch[1]);
         console.log("✅ Extracted ListRoom data:", listRoom.length, "rooms");
       } catch (e) {
         console.warn("⚠️ Failed to parse ListRoom:", e.message);
@@ -1665,9 +1664,7 @@ function extractCalendarOptionData(html) {
 
     if (bookingGroupMatch && bookingGroupMatch[1]) {
       try {
-        // Clean up the JavaScript code and evaluate it safely
-        const bookingGroupCode = bookingGroupMatch[1];
-        bookingGroup = JSON.parse(bookingGroupCode);
+        bookingGroup = JSON.parse(bookingGroupMatch[1]);
         console.log(
           "✅ Extracted BookingGroup data:",
           bookingGroup.length,
@@ -1691,6 +1688,109 @@ function extractCalendarOptionData(html) {
     };
   }
 }
+
+// ===== DLD (DAYLADAU) INTEGRATION ENDPOINTS =====
+const dld = require("./services/dld");
+
+// GET /api/dld/config — return current user's DLD config (no secrets exposed)
+app.get("/api/dld/config", authenticateToken, (req, res) => {
+  const cfg = getUserOtaConfig(req.user.id, "dld") || {};
+  res.json({
+    success: true,
+    host_id:          cfg.host_id          || "",
+    email_or_phone:   cfg.email_or_phone   || "",
+    has_password:     !!(cfg.password),
+    has_token:        !!(cfg.access_token),
+    token_expires_at: cfg.token_expires_at || null,
+  });
+});
+
+// PUT /api/dld/config — update current user's DLD credentials
+app.put("/api/dld/config", authenticateToken, (req, res) => {
+  const { host_id, email_or_phone, password } = req.body;
+  const cfg = getUserOtaConfig(req.user.id, "dld") || {};
+  if (host_id        !== undefined) cfg.host_id        = host_id;
+  if (email_or_phone !== undefined) cfg.email_or_phone = email_or_phone;
+  if (password       !== undefined) {
+    cfg.password         = password;
+    cfg.access_token     = "";
+    cfg.token_expires_at = null;
+  }
+  saveUserOtaConfig(req.user.id, "dld", cfg);
+  res.json({ success: true });
+});
+
+// POST /api/dld/test-login — test credentials, cache new token for current user
+app.post("/api/dld/test-login", authenticateToken, async (req, res) => {
+  const cfg = getUserOtaConfig(req.user.id, "dld") || {};
+  if (!cfg.email_or_phone || !cfg.password) {
+    return res.status(400).json({ success: false, error: "Credentials not configured" });
+  }
+  try {
+    const { token, expiresAt } = await dld.login(cfg.email_or_phone, cfg.password);
+    cfg.access_token     = token;
+    cfg.token_expires_at = expiresAt;
+    saveUserOtaConfig(req.user.id, "dld", cfg);
+    res.json({ success: true, token_expires_at: expiresAt });
+  } catch (e) {
+    console.error("❌ DLD test-login error:", e.message);
+    res.status(401).json({ success: false, error: e.message });
+  }
+});
+
+
+// ===== END DLD ENDPOINTS =====
+
+// ===== GO2JOY (G2J) INTEGRATION ENDPOINTS =====
+const g2j = require("./services/g2j");
+
+// GET /api/g2j/config
+app.get("/api/g2j/config", authenticateToken, (req, res) => {
+  const cfg = getUserOtaConfig(req.user.id, "go2joy") || {};
+  res.json({
+    success: true,
+    user_id:          cfg.user_id          || "",
+    has_password:     !!(cfg.password),
+    has_token:        !!(cfg.access_token),
+    token_expires_at: cfg.token_expires_at || null,
+    hotel_sns:        cfg.hotel_sns        || [],
+  });
+});
+
+// PUT /api/g2j/config
+app.put("/api/g2j/config", authenticateToken, (req, res) => {
+  const { user_id, password, hotel_sns } = req.body;
+  const cfg = getUserOtaConfig(req.user.id, "go2joy") || {};
+  if (user_id    !== undefined) cfg.user_id    = user_id;
+  if (hotel_sns  !== undefined) cfg.hotel_sns  = hotel_sns; // number[]
+  if (password   !== undefined) {
+    cfg.password         = password;
+    cfg.access_token     = "";
+    cfg.token_expires_at = null;
+  }
+  saveUserOtaConfig(req.user.id, "go2joy", cfg);
+  res.json({ success: true });
+});
+
+// POST /api/g2j/test-login
+app.post("/api/g2j/test-login", authenticateToken, async (req, res) => {
+  const cfg = getUserOtaConfig(req.user.id, "go2joy") || {};
+  if (!cfg.user_id || !cfg.password) {
+    return res.status(400).json({ success: false, error: "Credentials not configured" });
+  }
+  try {
+    const { token, expiresAt } = await g2j.login(cfg.user_id, cfg.password);
+    cfg.access_token     = token;
+    cfg.token_expires_at = expiresAt;
+    saveUserOtaConfig(req.user.id, "go2joy", cfg);
+    res.json({ success: true, token_expires_at: expiresAt });
+  } catch (e) {
+    console.error("❌ G2J test-login error:", e.message);
+    res.status(401).json({ success: false, error: e.message });
+  }
+});
+
+// ===== END G2J ENDPOINTS =====
 
 // Start server
 app.listen(PORT, HOST, () => {

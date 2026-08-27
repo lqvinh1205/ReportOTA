@@ -67,6 +67,7 @@ typings/
 # Configuration files with sensitive data
 config/users.json
 config/facilities.json
+config/backup/*
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache

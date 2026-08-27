@@ -102,11 +102,37 @@ function generateToken(user) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 }
 
+// ─── Per-user OTA config helpers ─────────────────────────────────────────────
+// Scalable key-value store: users[n].ota_configs[platform] = { ...credentials, ...cache }
+
+const USERS_PATH = path.join(__dirname, "../config/users.json");
+
+function getUserOtaConfig(userId, platform) {
+  try {
+    const data = JSON.parse(fs.readFileSync(USERS_PATH, "utf-8"));
+    const user = data.users.find((u) => u.id === userId);
+    return user?.ota_configs?.[platform] || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function saveUserOtaConfig(userId, platform, cfg) {
+  const data = JSON.parse(fs.readFileSync(USERS_PATH, "utf-8"));
+  const user = data.users.find((u) => u.id === userId);
+  if (!user) throw new Error(`User ${userId} not found`);
+  if (!user.ota_configs) user.ota_configs = {};
+  user.ota_configs[platform] = cfg;
+  fs.writeFileSync(USERS_PATH, JSON.stringify(data, null, 2), "utf-8");
+}
+
 module.exports = {
   authenticateToken,
   checkFacilityAccess,
   generateToken,
   loadUsers,
   loadFacilities,
+  getUserOtaConfig,
+  saveUserOtaConfig,
   JWT_SECRET,
 };

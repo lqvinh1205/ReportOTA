@@ -808,7 +808,7 @@ function generateReportText(bookings, allRoomNumbers = null) {
   if (arriving.length > 0) {
     reportText += `- Phòng đến:\n`;
     arriving.forEach((room) => {
-      reportText += `${room}\n`;
+      reportText += `${room}\n\n`;
     });
   } else {
     reportText += `- Phòng đến: Không có\n`;

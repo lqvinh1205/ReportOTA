@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OTA Settings — ReportOTA</title>
+  <link rel="stylesheet" href="styles.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    .wrap { max-width: 640px; margin: 40px auto; padding: 0 20px 60px; }
+    .page-header {
+      display: flex; align-items: center; gap: 14px;
+      padding: 14px 20px; background: var(--surface-color);
+      border: 1px solid var(--border-color); border-radius: var(--border-radius);
+      margin-bottom: 24px;
+    }
+    .page-header h1 { font-size: 18px; font-weight: 600; margin: 0; }
+    .back-link { color: var(--primary-color); text-decoration: none; font-size: 14px; font-weight: 500; }
+    .back-link:hover { opacity: .8; }
+
+    .section-label {
+      font-size: 11px; font-weight: 700; color: var(--text-secondary);
+      text-transform: uppercase; letter-spacing: .08em;
+      margin: 24px 0 8px; padding: 0 4px;
+    }
+    .card {
+      background: var(--surface-color); border: 1px solid var(--border-color);
+      border-radius: var(--border-radius); padding: 20px 24px; margin-bottom: 16px;
+    }
+    .card-title { font-size: 14px; font-weight: 600; color: var(--text-secondary);
+      text-transform: uppercase; letter-spacing: .05em; margin-bottom: 16px; }
+
+    .field { margin-bottom: 12px; }
+    .field label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 5px; }
+    .field input {
+      width: 100%; padding: 8px 10px; background: var(--background-color);
+      border: 1px solid var(--border-color); border-radius: 6px;
+      color: var(--text-primary); font-size: 14px; outline: none; box-sizing: border-box;
+    }
+    .field input:focus { border-color: var(--primary-color); }
+    .field .hint { font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
+
+    .row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px;
+      border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer;
+      border: none; transition: opacity .15s;
+    }
+    .btn:hover { opacity: .85; }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+    .btn-primary { background: var(--primary-color); color: #fff; }
+    .btn-outline { background: transparent; border: 1px solid var(--border-color); color: var(--text-primary); }
+
+    .token-box { margin-top: 12px; padding: 8px 12px; border-radius: 6px; font-size: 12px; }
+    .token-ok   { background: #14532d22; color: #4ade80; }
+    .token-warn { background: #78350f22; color: #fb923c; }
+    .token-none { background: #1e1b4b22; color: #a5b4fc; }
+
+    #status {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      padding: 9px 24px; background: var(--surface-color);
+      border-top: 1px solid var(--border-color);
+      font-size: 13px; color: var(--text-secondary); z-index: 99;
+    }
+    #status.ok    { color: #4ade80; }
+    #status.error { color: #f87171; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="page-header">
+      <a href="index.html" class="back-link">← Quay lại</a>
+      <h1>⚙️ OTA Settings</h1>
+      <span id="pageUser" style="margin-left:auto;font-size:12px;color:var(--text-secondary)"></span>
+    </div>
+
+    <!-- ── DLD ── -->
+    <div class="section-label">DayLaDau (DLD)</div>
+    <div class="card">
+      <div class="card-title">🔑 Credentials</div>
+      <div class="field">
+        <label>Host ID</label>
+        <input id="dldHostId" type="text" placeholder="usod0ohjcz">
+      </div>
+      <div class="field">
+        <label>Email / SĐT</label>
+        <input id="dldEmail" type="text" placeholder="0981189808">
+      </div>
+      <div class="field">
+        <label>Mật khẩu DLD</label>
+        <input id="dldPassword" type="password" placeholder="••••••••">
+      </div>
+      <div class="row">
+        <button class="btn btn-outline" onclick="saveDld()">💾 Lưu</button>
+        <button class="btn btn-primary" id="dldTestBtn" onclick="testDld()">🔑 Test Login</button>
+      </div>
+      <div id="dldTokenBox" class="token-box token-none" style="display:none"></div>
+    </div>
+
+    <!-- ── Go2Joy ── -->
+    <div class="section-label">Go2Joy (G2J)</div>
+    <div class="card">
+      <div class="card-title">🔑 Credentials</div>
+      <div class="field">
+        <label>User ID</label>
+        <input id="g2jUserId" type="text" placeholder="Newlifedongcac">
+      </div>
+      <div class="field">
+        <label>Mật khẩu Go2Joy</label>
+        <input id="g2jPassword" type="password" placeholder="••••••••">
+      </div>
+      <div class="field">
+        <label>Hotel SNs (cơ sở bạn sở hữu)</label>
+        <input id="g2jHotelSns" type="text" placeholder="31689, 32000">
+        <div class="hint">Nhập các hotelSn cách nhau bằng dấu phẩy. Chỉ đơn từ những cơ sở này mới được báo.</div>
+      </div>
+      <div class="row">
+        <button class="btn btn-outline" onclick="saveG2j()">💾 Lưu</button>
+        <button class="btn btn-primary" id="g2jTestBtn" onclick="testG2j()">🔑 Test Login</button>
+      </div>
+      <div id="g2jTokenBox" class="token-box token-none" style="display:none"></div>
+    </div>
+
+  </div>
+
+  <div id="status">Sẵn sàng</div>
+
+  <script src="ota-settings.js?v=3.0.0"></script>
+  <script>window.addEventListener('DOMContentLoaded', init);</script>
+</body>
+</html>

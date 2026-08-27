@@ -457,6 +457,26 @@ async function sendTelegram(message, botToken, chatId, username) {
   }
 }
 
+// Gửi lỗi hệ thống về kênh Telegram admin chung (không phải bot/chat riêng của user)
+async function sendTelegramError(message, username) {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!botToken || !chatId) {
+    log("⚠️  Thiếu TELEGRAM_BOT_TOKEN hoặc TELEGRAM_CHAT_ID (env)", username);
+    return;
+  }
+  try {
+    await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      chat_id: chatId,
+      text: message,
+      parse_mode: "HTML",
+    });
+    log("📨 Đã gửi Telegram lỗi (admin)", username);
+  } catch (e) {
+    log(`❌ Gửi Telegram lỗi thất bại: ${e.message}`, username);
+  }
+}
+
 function formatBookingMessage(b) {
   const room = extractRoomNumber(b.room);
   const checkinDate = dayjs(b.checkinDate, "DD/MM/YYYY");
@@ -503,9 +523,9 @@ async function buildUserSnapshot(user) {
       Object.assign(snapshot.pageTracker, result.pageTracker);
     } else {
       errorCount++;
-      await sendTelegram(
-        `⚠️ <b>Lỗi tạo snapshot</b>\nFacility: ${facility.name}\nLỗi: ${result.error}`,
-        user.telegram_bot_token, user.telegram_chat_id, user.username
+      await sendTelegramError(
+        `⚠️ <b>Lỗi tạo snapshot</b> [${user.username}]\nFacility: ${facility.name}\nLỗi: ${result.error}`,
+        user.username
       );
     }
     await sleep(1000);
@@ -530,9 +550,9 @@ async function checkFacility(facilityId, facility, snapshot, user) {
     const loginResult = await loginFacility(facility);
     if (!loginResult.success) {
       log(`⚠️  Không đăng nhập được ${facility.name}: ${loginResult.error}`, user.username);
-      await sendTelegram(
-        `⚠️ <b>Lỗi kết nối</b>\nFacility: ${facility.name}\nLỗi: ${loginResult.error}\nĐang thử lại sau...`,
-        user.telegram_bot_token, user.telegram_chat_id, user.username
+      await sendTelegramError(
+        `⚠️ <b>Lỗi kết nối</b> [${user.username}]\nFacility: ${facility.name}\nLỗi: ${loginResult.error}\nĐang thử lại sau...`,
+        user.username
       );
       return { newBookings: [], pageTrackerUpdates: {} };
     }
@@ -669,6 +689,254 @@ async function notifyNewBookings(user, newBookings) {
   log(`🎉 ${newBookings.length} booking mới (gửi Telegram: ${toNotify.length})`, user.username);
 }
 
+// ─── DLD (DayLaDau) integration ──────────────────────────────────────────────
+const dld = require("./services/dld");
+
+function dldOrderKey(order) {
+  return `dld_${order.id || order.order_id || order._id || JSON.stringify(order).slice(0, 40)}`;
+}
+
+// Read user's DLD config from users.json
+function loadUserDldConfig(user) {
+  try {
+    const data = JSON.parse(fs.readFileSync(USERS_FILE, "utf-8"));
+    const u    = data.users.find((x) => x.id === user.id);
+    return u?.ota_configs?.dld || null;
+  } catch (_) { return null; }
+}
+
+// Persist updated DLD config (e.g. refreshed token) back to users.json
+function saveUserDldConfig(user, cfg) {
+  try {
+    const data = JSON.parse(fs.readFileSync(USERS_FILE, "utf-8"));
+    const u    = data.users.find((x) => x.id === user.id);
+    if (!u) return;
+    if (!u.ota_configs) u.ota_configs = {};
+    u.ota_configs.dld = cfg;
+    fs.writeFileSync(USERS_FILE, JSON.stringify(data, null, 2), "utf-8");
+  } catch (e) { log(`⚠️  [DLD] Cannot save token: ${e.message}`, user.username); }
+}
+
+// Fetch today's DLD orders for a user. Returns null if DLD isn't configured.
+async function fetchTodayDldOrders(user) {
+  const cfg = loadUserDldConfig(user);
+  if (!cfg || !cfg.host_id) return null;
+
+  const now = new Date();
+  const startTs = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).getTime();
+  const endTs   = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).getTime();
+
+  const token = await dld.getToken(cfg, (msg) => log(msg, user.username));
+  saveUserDldConfig(user, cfg); // persist refreshed token if getToken logged in
+  const orders = await dld.fetchOrdersAll(cfg.host_id, token, startTs, endTs);
+  return orders.filter((o) => o.status === "paid" && o.reservation?.status !== "cancelled"); // bỏ qua đơn cancelled/open (chưa thanh toán) và reservation đã hủy
+}
+
+function extractDldOrderInfo(order) {
+  const listingName = order.listing?.nickname || order.listing?.name || String(order.listing_id || "");
+  const guestName   = order.guest?.fullname || "Khách";
+  const orderId     = String(order.id || "");
+  const checkin  = order.reservation?.start_time
+    ? dayjs(order.reservation.start_time).format("HH:mm DD/MM")
+    : "";
+  const checkout = order.reservation?.end_time
+    ? dayjs(order.reservation.end_time).format("HH:mm DD/MM")
+    : "";
+  const total = order.total
+    ? Number(order.total).toLocaleString("vi-VN") + "đ"
+    : "";
+  return { listingName, guestName, orderId, checkin, checkout, total };
+}
+
+// Build the day's DLD baseline: seed dldOrderKeys with today's existing orders
+// and return a single-message summary (no per-order Telegram spam).
+async function buildDldSnapshot(user) {
+  let orders;
+  try {
+    orders = await fetchTodayDldOrders(user);
+  } catch (e) {
+    log(`❌ [DLD] Snapshot lỗi: ${e.message}`, user.username);
+    await sendTelegramError(`❌ <b>[DLD] Lỗi tạo snapshot</b> [${user.username}]\n${e.message}`, user.username);
+    return null;
+  }
+  if (orders === null) return null; // chưa cấu hình DLD
+
+  const keys = orders.map(dldOrderKey);
+  const lines = orders.map((order) => {
+    const { listingName, guestName, orderId, checkin, checkout, total } = extractDldOrderInfo(order);
+    return `• ${listingName}\n- ${guestName} (#${orderId})${checkin && checkout ? ` — ${checkin}→${checkout}` : ""}${total ? ` — ${total}` : ""}`;
+  });
+  return { keys, lines };
+}
+
+async function checkDldOrders(user, snapshot) {
+  const seenKeys = new Set(snapshot.dldOrderKeys || []);
+  const newOrders = [];
+
+  try {
+    const orders = await fetchTodayDldOrders(user);
+    if (orders === null) return [];
+    log("🔍 [DLD] Checking new orders...", user.username);
+    log(`   [DLD] ${orders.length} orders today`, user.username);
+
+    for (const order of orders) {
+      const key = dldOrderKey(order);
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      newOrders.push({ order, key });
+      log(`  🆕 [DLD] order ${String(order.id || "").slice(-6)} — listing ${order.listing_id || ""}`, user.username);
+    }
+  } catch (e) {
+    log(`❌ [DLD] ${e.message}`, user.username);
+    await sendTelegramError(`❌ <b>[DLD] Lỗi kiểm tra đơn mới</b> [${user.username}]\n${e.message}`, user.username);
+  }
+
+  return newOrders;
+}
+
+async function notifyDldOrders(user, newOrders, snapshot) {
+  if (newOrders.length === 0) return;
+
+  if (!snapshot.dldOrderKeys) snapshot.dldOrderKeys = [];
+  for (const { key } of newOrders) snapshot.dldOrderKeys.push(key);
+
+  for (const { order } of newOrders) {
+    const { listingName, guestName, orderId, checkin, checkout, total } = extractDldOrderInfo(order);
+
+    const lines = [
+      `🔔 <b>Đơn mới DayLaDau</b>`,
+      `${listingName} - ${guestName} (#${orderId})`,
+      checkin && checkout ? `${checkin} → ${checkout}` : "",
+      total ? `DayLaDau đã thanh toán ${total}` : "",
+    ].filter(Boolean).join("\n");
+
+    await sendTelegram(lines, user.telegram_bot_token, user.telegram_chat_id, user.username);
+  }
+
+  log(`🎉 [DLD] Sent Telegram for ${newOrders.length} new orders`, user.username);
+}
+
+// ─── Go2Joy integration ──────────────────────────────────────────────────────
+const g2j = require("./services/g2j");
+
+function g2jOrderKey(b) {
+  return `g2j_${b.bookingSn || b.sn || b.id || JSON.stringify(b).slice(0, 40)}`;
+}
+
+function loadUserG2jConfig(user) {
+  try {
+    const data = JSON.parse(fs.readFileSync(USERS_FILE, "utf-8"));
+    const u    = data.users.find((x) => x.id === user.id);
+    return u?.ota_configs?.go2joy || null;
+  } catch (_) { return null; }
+}
+
+function saveUserG2jConfig(user, cfg) {
+  try {
+    const data = JSON.parse(fs.readFileSync(USERS_FILE, "utf-8"));
+    const u    = data.users.find((x) => x.id === user.id);
+    if (!u) return;
+    if (!u.ota_configs) u.ota_configs = {};
+    u.ota_configs.go2joy = cfg;
+    fs.writeFileSync(USERS_FILE, JSON.stringify(data, null, 2), "utf-8");
+  } catch (e) { log(`⚠️  [G2J] Cannot save token: ${e.message}`, user.username); }
+}
+
+function todayDateStr() {
+  const today = new Date();
+  return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+}
+
+// Fetch today's G2J bookings for a user. Returns null if G2J isn't configured.
+async function fetchTodayG2jBookings(user) {
+  const cfg = loadUserG2jConfig(user);
+  if (!cfg || !cfg.user_id) return null;
+
+  const token = await g2j.getToken(cfg, (msg) => log(msg, user.username));
+  saveUserG2jConfig(user, cfg);
+  return g2j.fetchBookingsAll(token, todayDateStr(), cfg.hotel_sns || [], (msg) => log(msg, user.username));
+}
+
+function extractG2jBookingInfo(b) {
+  const hotelName  = b.hotelName  || b.hotel_name  || b.hotel?.name  || "";
+  const guestName  = b.appUserNickName || b.guestName || b.guest_name || b.guest?.name || "Khách";
+  const roomType   = b.roomTypeName || b.room_type_name || b.room?.name || "";
+  const checkIn    = b.checkIn    || b.check_in    || b.checkin  || b.startDate  || "";
+  const checkOut   = b.checkOut   || b.check_out   || b.checkout || b.endDate    || "";
+  const total      = b.totalAmount || b.total_amount || b.total  || b.amount     || "";
+  const bookingSn  = String(b.bookingSn || b.sn || b.id || "");
+  const totalFmt   = total ? Number(total).toLocaleString("vi-VN") + "đ" : "";
+  return { hotelName, guestName, roomType, checkIn, checkOut, bookingSn, totalFmt };
+}
+
+// Build the day's G2J baseline: seed g2jOrderKeys with today's existing bookings
+// and return a single-message summary (no per-booking Telegram spam).
+async function buildG2jSnapshot(user) {
+  let bookings;
+  try {
+    bookings = await fetchTodayG2jBookings(user);
+  } catch (e) {
+    log(`❌ [G2J] Snapshot lỗi: ${e.message}`, user.username);
+    await sendTelegramError(`❌ <b>[G2J] Lỗi tạo snapshot</b> [${user.username}]\n${e.message}`, user.username);
+    return null;
+  }
+  if (bookings === null) return null; // chưa cấu hình G2J
+
+  const keys = bookings.map(g2jOrderKey);
+  const lines = bookings.map((b) => {
+    const { hotelName, guestName, roomType, checkIn, checkOut, bookingSn, totalFmt } = extractG2jBookingInfo(b);
+    return `• ${hotelName}${roomType ? ` - ${roomType}` : ""}\n- ${guestName} (#${bookingSn})${checkIn && checkOut ? ` — ${checkIn}→${checkOut}` : ""}${totalFmt ? ` — ${totalFmt}` : ""}`;
+  });
+  return { keys, lines };
+}
+
+async function checkG2jOrders(user, snapshot) {
+  const seenKeys = new Set(snapshot.g2jOrderKeys || []);
+  const newOrders = [];
+
+  try {
+    const bookings = await fetchTodayG2jBookings(user);
+    if (bookings === null) return [];
+    log("🔍 [G2J] Checking new bookings...", user.username);
+    log(`   [G2J] ${bookings.length} bookings today`, user.username);
+
+    for (const b of bookings) {
+      const key = g2jOrderKey(b);
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      newOrders.push({ booking: b, key });
+      log(`  🆕 [G2J] #${b.bookingSn || b.sn} — ${b.hotelName || b.hotel_name || ""} — ${b.appUserNickName || b.guestName || b.guest_name || ""}`, user.username);
+    }
+  } catch (e) {
+    log(`❌ [G2J] ${e.message}`, user.username);
+    await sendTelegramError(`❌ <b>[G2J] Lỗi kiểm tra đơn mới</b> [${user.username}]\n${e.message}`, user.username);
+  }
+
+  return newOrders;
+}
+
+async function notifyG2jOrders(user, newOrders, snapshot) {
+  if (newOrders.length === 0) return;
+
+  if (!snapshot.g2jOrderKeys) snapshot.g2jOrderKeys = [];
+  for (const { key } of newOrders) snapshot.g2jOrderKeys.push(key);
+
+  for (const { booking: b } of newOrders) {
+    const { hotelName, guestName, roomType, checkIn, checkOut, bookingSn, totalFmt } = extractG2jBookingInfo(b);
+
+    const lines = [
+      `🔔 <b>Đơn mới Go2Joy</b>`,
+      `${hotelName}${roomType ? ` - ${roomType}` : ""} - ${guestName} (#${bookingSn})`,
+      checkIn && checkOut ? `${checkIn} → ${checkOut}` : "",
+      totalFmt ? `Go2Joy đã thanh toán ${totalFmt}` : "",
+    ].filter(Boolean).join("\n");
+
+    await sendTelegram(lines, user.telegram_bot_token, user.telegram_chat_id, user.username);
+  }
+
+  log(`🎉 [G2J] Sent Telegram for ${newOrders.length} new bookings`, user.username);
+}
+
 // ─── Per-user monitor loop ────────────────────────────────────────────────────
 async function runUserMonitor(user, snapshots) {
   // Init snapshot nếu chưa có hoặc sang ngày mới
@@ -684,17 +952,57 @@ async function runUserMonitor(user, snapshots) {
       `✅ <b>ReportOTA Monitor - ${snapshots[user.username].date}</b>\nSnapshot: ${snapshots[user.username].totalBookings} booking\nKiểm tra mỗi: ${MONITOR_INTERVAL / 1000}s`,
       user.telegram_bot_token, user.telegram_chat_id, user.username
     );
+
+    // DLD: seed dldOrderKeys với các đơn check-in hôm nay đã tồn tại sẵn,
+    // báo 1 tin tổng hợp — tránh bị coi nhầm là "🆕 đơn mới" ở tick đầu ngày
+    const dldSeed = await buildDldSnapshot(user);
+    if (dldSeed) {
+      snapshots[user.username].dldOrderKeys = dldSeed.keys;
+      saveSnapshot(snapshots[user.username], user.username);
+      const msg = [`📸 <b>[DLD] Snapshot hôm nay</b>: ${dldSeed.lines.length} đơn`, ...dldSeed.lines].join("\n\n");
+      await sendTelegram(msg, user.telegram_bot_token, user.telegram_chat_id, user.username);
+    }
+
+    // G2J: cùng pattern với DLD — seed g2jOrderKeys, báo 1 tin tổng hợp
+    const g2jSeed = await buildG2jSnapshot(user);
+    if (g2jSeed) {
+      snapshots[user.username].g2jOrderKeys = g2jSeed.keys;
+      saveSnapshot(snapshots[user.username], user.username);
+      const msg = [`📸 <b>[G2J] Snapshot hôm nay</b>: ${g2jSeed.lines.length} đơn`, ...g2jSeed.lines].join("\n\n");
+      await sendTelegram(msg, user.telegram_bot_token, user.telegram_chat_id, user.username);
+    }
   }
 
+  // Blue PMS check
   try {
     const newBookings = await checkUserBookings(user, snapshots[user.username]);
     await notifyNewBookings(user, newBookings);
   } catch (e) {
     log(`❌ Lỗi trong tick: ${e.message}`, user.username);
-    await sendTelegram(
-      `❌ <b>Lỗi Monitor</b>\n${e.message}\nTự động thử lại...`,
-      user.telegram_bot_token, user.telegram_chat_id, user.username
+    await sendTelegramError(
+      `❌ <b>Lỗi Monitor</b> [${user.username}]\n${e.message}\nTự động thử lại...`,
+      user.username
     );
+  }
+
+  // DLD check
+  try {
+    const newDldOrders = await checkDldOrders(user, snapshots[user.username]);
+    await notifyDldOrders(user, newDldOrders, snapshots[user.username]);
+    if (newDldOrders.length > 0) saveSnapshot(snapshots[user.username], user.username);
+  } catch (e) {
+    log(`❌ [DLD] ${e.message}`, user.username);
+    await sendTelegramError(`❌ <b>[DLD] Lỗi trong tick</b> [${user.username}]\n${e.message}`, user.username);
+  }
+
+  // G2J check
+  try {
+    const newG2jOrders = await checkG2jOrders(user, snapshots[user.username]);
+    await notifyG2jOrders(user, newG2jOrders, snapshots[user.username]);
+    if (newG2jOrders.length > 0) saveSnapshot(snapshots[user.username], user.username);
+  } catch (e) {
+    log(`❌ [G2J] ${e.message}`, user.username);
+    await sendTelegramError(`❌ <b>[G2J] Lỗi trong tick</b> [${user.username}]\n${e.message}`, user.username);
   }
 }
 
