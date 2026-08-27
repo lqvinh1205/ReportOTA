@@ -1531,8 +1531,18 @@ function parseBookingData(html) {
             totalAmount: extractTextFromCell(cells[15]),
             paid: extractTextFromCell(cells[13]),
             balance: extractTextFromCell(cells[15]),
-            notes: cells.length > 16 ? extractTextFromCell(cells[16]) : "",
+            notes: cells.length > 19 ? extractNoteFromCell(cells[19]) : "",
           };
+
+          // Expedia: giá ở cột totalAmount là giá gộp OTA, giá net thực nhận
+          // nằm trong "Collect Amount" của ghi chú phòng (cell 19)
+          if (booking.source === "Expedia") {
+            const collectAmount = extractExpediaCollectAmount(booking.notes);
+            if (collectAmount) {
+              booking.totalAmount = collectAmount;
+              booking.balance = collectAmount;
+            }
+          }
 
           // Clean up the data
           booking.totalAmount = booking.totalAmount
@@ -1589,6 +1599,43 @@ function extractTextFromCell(cellHtml) {
     .replace(/&#(\d+);/g, (match, dec) => String.fromCharCode(dec));
 
   return text.trim();
+}
+
+// Helper function to extract room note text from the ShowNotes(...) onclick
+// attribute of a table cell (the note text lives in the attribute, not in the
+// cell's inner text, so extractTextFromCell can't be reused here)
+function extractNoteFromCell(cellHtml) {
+  if (!cellHtml) return "";
+
+  const onclickMatch = cellHtml.match(
+    /onclick="ShowNotes\('([\s\S]*?)'\);?"/i,
+  );
+  if (!onclickMatch) return "";
+
+  let text = onclickMatch[1];
+
+  // Decode HTML entities
+  text = text
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#(\d+);/g, (match, dec) => String.fromCharCode(dec));
+
+  // Strip inner HTML tags (<b>, <br/>, ...) left over from the decoded note
+  text = text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+
+  return text;
+}
+
+// Helper function to extract the Expedia net amount ("Collect Amount")
+// from a decoded room note string
+function extractExpediaCollectAmount(noteText) {
+  if (!noteText) return "";
+
+  const match = noteText.match(/Collect Amount:\s*[₫đ]?\s*([\d.,]+)/i);
+  return match ? match[1] : "";
 }
 
 // Helper function to extract CalendarOption data from HTML

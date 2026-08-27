@@ -272,6 +272,32 @@ function extractText(cellHtml) {
     .trim();
 }
 
+// The room note text lives in the ShowNotes(...) onclick attribute, not in the
+// cell's inner text, so extractText (which strips the whole <a> tag) can't be reused here
+function extractNoteFromCell(cellHtml) {
+  if (!cellHtml) return "";
+
+  const onclickMatch = cellHtml.match(/onclick="ShowNotes\('([\s\S]*?)'\);?"/i);
+  if (!onclickMatch) return "";
+
+  let text = onclickMatch[1]
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(d));
+
+  return text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+// Extract the Expedia net amount ("Collect Amount") from a decoded room note string
+function extractExpediaCollectAmount(noteText) {
+  if (!noteText) return "";
+  const match = noteText.match(/Collect Amount:\s*[₫đ]?\s*([\d.,]+)/i);
+  return match ? match[1] : "";
+}
+
 function parseBookings(html) {
   let currentPage = 1;
   let totalPages = 1;
@@ -296,7 +322,7 @@ function parseBookings(html) {
     for (let i = 1; i < rows.length; i++) {
       const cells = rows[i].match(/<td[^>]*>([\s\S]*?)<\/td>/gi) || [];
       if (cells.length >= 15) {
-        bookings.push({
+        const booking = {
           bookingCode: extractText(cells[0]),
           otaReference: extractText(cells[1]),
           guestName: extractText(cells[2]),
@@ -311,8 +337,19 @@ function parseBookings(html) {
           checkoutTime: extractText(cells[11]),
           totalAmount: extractText(cells[15]).replace(/[^\d,.-]/g, "").trim(),
           paid: extractText(cells[13]).replace(/[^\d,.-]/g, "").trim(),
-          notes: cells.length > 16 ? extractText(cells[16]) : "",
-        });
+          notes: cells.length > 19 ? extractNoteFromCell(cells[19]) : "",
+        };
+
+        // Expedia: giá ở cột totalAmount là giá gộp OTA, giá net thực nhận
+        // nằm trong "Collect Amount" của ghi chú phòng
+        if (booking.source === "Expedia") {
+          const collectAmount = extractExpediaCollectAmount(booking.notes);
+          if (collectAmount) {
+            booking.totalAmount = collectAmount.replace(/[^\d,.-]/g, "").trim();
+          }
+        }
+
+        bookings.push(booking);
       }
     }
   }
