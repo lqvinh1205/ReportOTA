@@ -452,6 +452,21 @@ async function sendTelegram(message, botToken, chatId, username) {
       parse_mode: "HTML",
     });
     log("📨 Đã gửi Telegram", username);
+
+    // Gửi lỗi hệ thống về kênh Telegram admin chung (không phải bot/chat riêng của user)
+    const botTokenAdmin = process.env.TELEGRAM_BOT_TOKEN;
+    const chatIdAdmin = process.env.TELEGRAM_CHAT_ID;
+    if (botTokenAdmin && chatIdAdmin) {
+      await axios.post(
+        `https://api.telegram.org/bot${botTokenAdmin}/sendMessage`,
+        {
+          chat_id: chatIdAdmin,
+          text: message,
+          parse_mode: "HTML",
+        },
+      );
+      log("📨 Đã gửi Telegram lỗi (admin)", username);
+    }
   } catch (e) {
     log(`❌ Gửi Telegram thất bại: ${e.message}`, username);
   }
