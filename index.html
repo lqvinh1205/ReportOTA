@@ -21,6 +21,7 @@
                     <span id="userName" class="user-name">👤 User</span>
                     <span id="totalRoomsBadge" class="total-rooms-badge" style="display:none">
                         🏠&nbsp;<span id="totalRoomsCount">0</span>&nbsp;phòng
+                        <button id="syncRoomsBtn" class="sync-rooms-btn" onclick="syncRoomCounts()" title="Đồng bộ số phòng">🔄</button>
                     </span>
                     <button onclick="logout()" class="logout-btn">Đăng xuất</button>
                 </div>
@@ -105,7 +106,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.13/dayjs.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.13/plugin/customParseFormat.js"></script>
-    <script src="script.js?v=1.0.3"></script>
+    <script src="script.js?v=1.0.4"></script>
     <script>
         // Check authentication on page load
         window.addEventListener('DOMContentLoaded', async () => {

@@ -1090,6 +1090,63 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+// Reusable: login + fetch calendar + build room list for a facility
+async function fetchRoomListForFacility(facility) {
+  console.log("🔐 Logging in for room list...");
+  const { success: loginOk, cookies, error: loginErr } = await loginAndResolveCookies(facility);
+  if (!loginOk) {
+    return { success: false, error: loginErr };
+  }
+
+  const calendarUrl = `${baseUrl}/app/calendar`;
+  console.log("🌐 Fetching calendar page for room list...");
+
+  const calendarResponse = await axios.get(calendarUrl, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+      Accept:
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
+      Cookie: cookies,
+      "Cache-Control": "no-cache",
+    },
+  });
+
+  if (calendarResponse.status !== 200) {
+    return { success: false, error: `Calendar page request failed: ${calendarResponse.status}` };
+  }
+
+  console.log("✅ Calendar page loaded successfully");
+
+  // Extract room data from calendar
+  const calendarData = extractCalendarOptionData(calendarResponse.data);
+
+  if (!calendarData.success) {
+    return { success: false, error: "Failed to extract calendar data" };
+  }
+
+  // Filter rooms by facility room types
+  const facilityRooms = calendarData.listRoom.filter((room) => {
+    const roomTypeId =
+      room.RoomTypeId || room.Group || room.TypeRoomId || room.Type;
+    return facility.roomTypes.includes(roomTypeId);
+  });
+
+  // Transform room data to simple format for report generation
+  const roomList = facilityRooms.map((room) => ({
+    id: room.Id,
+    name: room.Name,
+    roomNumber: room.Number,
+    roomTypeId:
+      room.RoomTypeId || room.Group || room.TypeRoomId || room.Type,
+    floor: room.Floor || null,
+  }));
+
+  console.log(`✅ Found ${roomList.length} rooms for facility ${facility.name}`);
+
+  return { success: true, roomList };
+}
+
 // New API endpoint to get list of rooms for a facility
 app.post(
   "/api/list-rooms",
@@ -1110,76 +1167,14 @@ app.post(
       const facility = facilities[facilityId];
       console.log(`🏠 Getting room list for facility: ${facility.name}`);
 
-      // Always login fresh with facility credentials (no shared session state)
-      console.log("🔐 Logging in for room list...");
-      const { success: loginOk, cookies: listRoomCookies, error: loginErr } = await loginAndResolveCookies(facility);
-      if (!loginOk) {
+      const { success: roomsOk, roomList, error: roomsErr } = await fetchRoomListForFacility(facility);
+      if (!roomsOk) {
         return res.status(401).json({
           success: false,
-          error: loginErr,
+          error: roomsErr,
           facility: { id: facilityId, name: facility.name },
         });
       }
-
-      // Fetch calendar page to get room list
-      const calendarUrl = `${baseUrl}/app/calendar`;
-      console.log("🌐 Fetching calendar page for room list...");
-
-      const calendarResponse = await axios.get(calendarUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-          Accept:
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
-          Cookie: listRoomCookies,
-          "Cache-Control": "no-cache",
-        },
-      });
-
-      if (calendarResponse.status !== 200) {
-        throw new Error(
-          `Calendar page request failed: ${calendarResponse.status}`,
-        );
-      }
-
-      console.log("✅ Calendar page loaded successfully");
-
-      // Extract room data from calendar
-      const calendarData = extractCalendarOptionData(calendarResponse.data);
-
-      if (!calendarData.success) {
-        return res.status(500).json({
-          success: false,
-          error: "Failed to extract calendar data",
-        });
-      }
-
-      // Filter rooms by facility room types
-      const facilityRooms = calendarData.listRoom.filter((room) => {
-        const roomTypeId =
-          room.RoomTypeId || room.Group || room.TypeRoomId || room.Type;
-        return facility.roomTypes.includes(roomTypeId);
-      });
-
-      // Transform room data to simple format for report generation
-      const roomList = facilityRooms.map((room) => {
-        // Extract room number from room name (e.g., "1N1K - 450" -> "450")
-        // const roomNumberMatch = room.Name.match(/-\s*(\d+)/);
-        // const roomNumber = roomNumberMatch ? roomNumberMatch[1] : room.Name;
-
-        return {
-          id: room.Id,
-          name: room.Name,
-          roomNumber: room.Number,
-          roomTypeId:
-            room.RoomTypeId || room.Group || room.TypeRoomId || room.Type,
-          floor: room.Floor || null,
-        };
-      });
-
-      console.log(
-        `✅ Found ${roomList.length} rooms for facility ${facility.name}`,
-      );
 
       // Save room count to user's facilities_count array in users.json
       try {
@@ -1246,6 +1241,56 @@ app.get("/api/room-counts", authenticateToken, (req, res) => {
     totalRooms,
     facilities: facilityData,
   });
+});
+
+// Actively re-sync room counts for all of the current user's facilities.
+// Clears facilities_count first so facilities removed from the user's access
+// list don't leave stale counts behind, then re-fetches each remaining facility.
+app.post("/api/sync-room-counts", authenticateToken, async (req, res) => {
+  try {
+    const usersPath = path.join(__dirname, "config/users.json");
+    const usersData = JSON.parse(fs.readFileSync(usersPath, "utf8"));
+    const userIndex = usersData.users.findIndex((u) => u.id === req.user.id);
+    if (userIndex === -1) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+
+    const targetUser = usersData.users[userIndex];
+    const userFacilities = targetUser.facilities || [];
+
+    targetUser.facilities_count = new Array(userFacilities.length).fill(null);
+
+    const results = [];
+    for (let idx = 0; idx < userFacilities.length; idx++) {
+      const facilityId = userFacilities[idx];
+      const facility = facilities[facilityId];
+      if (!facility) {
+        results.push({ facilityId, success: false, error: "Facility not found" });
+        continue;
+      }
+
+      const { success, roomList, error } = await fetchRoomListForFacility(facility);
+      if (success) {
+        targetUser.facilities_count[idx] = roomList.length;
+        results.push({ facilityId, name: facility.name, success: true, roomCount: roomList.length });
+      } else {
+        results.push({ facilityId, name: facility.name, success: false, error });
+      }
+    }
+
+    fs.writeFileSync(usersPath, JSON.stringify(usersData, null, 2), "utf8");
+
+    const totalRooms = targetUser.facilities_count.reduce((sum, c) => sum + (c || 0), 0);
+
+    res.json({
+      success: true,
+      totalRooms,
+      facilities: results,
+    });
+  } catch (error) {
+    console.error("❌ Sync room counts error:", error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 // New endpoint: Revenue report with date range
@@ -1815,6 +1860,9 @@ app.listen(PORT, HOST, () => {
   );
   console.log(
     "   GET  /api/room-counts               - Get cached room counts per facility for current user",
+  );
+  console.log(
+    "   POST /api/sync-room-counts          - Actively re-sync room counts for all of the user's facilities",
   );
   console.log("");
   console.log("💡 Usage examples:");

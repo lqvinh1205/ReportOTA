@@ -1060,6 +1060,45 @@ function updateRoomCountBadge(total) {
   badge.style.display = total > 0 ? "inline-flex" : "none";
 }
 
+// Actively re-sync room counts for all of the user's facilities (called from the sync icon)
+async function syncRoomCounts() {
+  const btn = document.getElementById("syncRoomsBtn");
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add("syncing");
+  }
+
+  try {
+    const response = await fetchWithAuth(`${API_BASE_URL}/api/sync-room-counts`, {
+      method: "POST",
+    });
+    const data = await response.json();
+
+    if (data.success) {
+      updateRoomCountBadge(data.totalRooms);
+      const failed = (data.facilities || []).filter((f) => !f.success);
+      if (failed.length > 0) {
+        showNotification(
+          `Đồng bộ xong, nhưng lỗi ở: ${failed.map((f) => f.name || f.facilityId).join(", ")}`,
+          "warning"
+        );
+      } else {
+        showNotification("Đồng bộ số phòng thành công!", "success");
+      }
+    } else {
+      showNotification(data.error || "Đồng bộ số phòng thất bại!", "error");
+    }
+  } catch (error) {
+    if (error.message === "Authentication failed") return;
+    showNotification("Lỗi khi đồng bộ số phòng!", "error");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove("syncing");
+    }
+  }
+}
+
 // Load facilities from server
 async function loadFacilities() {
   try {

@@ -109,6 +109,45 @@ body {
   border-radius: 20px;
   font-size: 0.9rem;
   font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.sync-rooms-btn {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.85;
+  transition: opacity 0.2s ease;
+}
+
+.sync-rooms-btn:hover {
+  opacity: 1;
+}
+
+.sync-rooms-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.sync-rooms-btn.syncing {
+  animation: sync-rooms-spin 1s linear infinite;
+}
+
+@keyframes sync-rooms-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .logout-btn {
