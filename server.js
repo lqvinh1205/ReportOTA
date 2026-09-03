@@ -1682,7 +1682,7 @@ function extractExpediaCollectAmount(noteText) {
   if (!noteText) return "";
 
   const match = noteText.match(/Collect Amount:\s*[₫đ]?\s*([\d.,]+)/i);
-  return match ? match[1] : "";
+  return match ? match[1]?.replace(/,/g, ".") : "";
 }
 
 // Helper function to extract CalendarOption data from HTML
