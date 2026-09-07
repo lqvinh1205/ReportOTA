@@ -49,7 +49,9 @@ async function verifyAuth() {
     });
 
     if (!response.ok) {
-      logout();
+      // TẠM THỜI: không redirect về login khi verify trả 401/403
+      console.warn('Auth verify failed:', response.status);
+      // logout();
       return false;
     }
 
@@ -59,7 +61,9 @@ async function verifyAuth() {
       localStorage.setItem('user', JSON.stringify(result.user));
       return true;
     } else {
-      logout();
+      // TẠM THỜI: không redirect về login khi verify trả success=false
+      console.warn('Auth verify returned success=false');
+      // logout();
       return false;
     }
   } catch (error) {
@@ -88,8 +92,10 @@ async function fetchWithAuth(url, options = {}) {
   const response = await fetch(url, authOptions);
   
   if (response.status === 401 || response.status === 403) {
-    logout();
-    throw new Error('Authentication failed');
+    // TẠM THỜI: không redirect về login, chỉ báo lỗi để chỗ gọi tự xử lý
+    console.warn('Authentication failed:', response.status, url);
+    // logout();
+    throw new Error(`Authentication failed (HTTP ${response.status})`);
   }
 
   return response;

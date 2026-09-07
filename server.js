@@ -57,6 +57,59 @@ const reservationPath = `${baseUrl}/app/Reservation`;
 // Store session cookies
 let sessionCookies = "";
 
+// Turns any HTTP/axios failure into a readable, loggable description.
+// Captures status, the response headers that identify a WAF/proxy block
+// (server, cf-ray, x-request-id...) and the beginning of the response body,
+// which is where the OTA/WAF puts the actual reason for a 403.
+function describeHttpError(label, error) {
+  const res = error.response;
+  const info = {
+    label,
+    message: error.message,
+    code: error.code || null,
+    url: error.config ? `${(error.config.method || "get").toUpperCase()} ${error.config.url}` : null,
+    status: res ? res.status : null,
+    statusText: res ? res.statusText : null,
+    headers: res
+      ? {
+          server: res.headers["server"],
+          "content-type": res.headers["content-type"],
+          "cf-ray": res.headers["cf-ray"],
+          "cf-mitigated": res.headers["cf-mitigated"],
+          "x-request-id": res.headers["x-request-id"],
+          "x-amzn-waf-action": res.headers["x-amzn-waf-action"],
+          location: res.headers["location"],
+          "retry-after": res.headers["retry-after"],
+          "www-authenticate": res.headers["www-authenticate"],
+        }
+      : null,
+    body: res ? bodyToText(res.data).slice(0, 3000) : null,
+  };
+  return info;
+}
+
+// Response bodies can be a string, Buffer, stream or object - normalize before slicing.
+function bodyToText(data) {
+  if (data == null) return "";
+  if (typeof data === "string") return data;
+  if (Buffer.isBuffer(data)) return data.toString("utf8");
+  try {
+    return JSON.stringify(data);
+  } catch (e) {
+    return String(data);
+  }
+}
+
+function logHttpError(label, error) {
+  const info = describeHttpError(label, error);
+  console.error(`\u274c ${label}: ${info.message}`);
+  if (info.url) console.error("   request:", info.url);
+  if (info.status) console.error("   status:", info.status, info.statusText || "");
+  if (info.headers) console.error("   headers:", JSON.stringify(info.headers));
+  if (info.body) console.error("   body:\n" + info.body);
+  return info;
+}
+
 // Helper function to extract cookies from response
 function extractCookies(response) {
   const cookies = response.headers["set-cookie"];
@@ -386,14 +439,19 @@ async function performLogin(facilityEmail = null, facilityPassword = null) {
       redirectLocation: loginResponse.headers.location || null,
     };
   } catch (error) {
-    console.error("❌ Login error:", error.message);
+    const info = logHttpError("Login error", error);
     return {
       success: false,
-      error: error.message,
-      details: error.response
+      error: info.status
+        ? `${error.message} (HTTP ${info.status})`
+        : error.message,
+      status: info.status,
+      details: info.status
         ? {
-            status: error.response.status,
-            data: error.response.data.substring(0, 500),
+            status: info.status,
+            statusText: info.statusText,
+            headers: info.headers,
+            data: (info.body || "").slice(0, 1000),
           }
         : null,
     };
@@ -406,10 +464,11 @@ app.post("/api/login", async (req, res) => {
     const loginResult = await performLogin();
     res.json(loginResult);
   } catch (error) {
-    console.error("❌ Login endpoint error:", error.message);
+    const info = logHttpError("Login endpoint error", error);
     res.status(500).json({
       success: false,
       error: error.message,
+      details: info.status ? info : null,
     });
   }
 });
@@ -455,19 +514,11 @@ app.get("/api/report", async (req, res) => {
       ...parsedData,
     });
   } catch (error) {
-    console.error("❌ Report fetch error:", error.message);
+    const info = logHttpError("Report fetch error", error);
     res.status(500).json({
       success: false,
       error: error.message,
-      details: error.response
-        ? {
-            status: error.response.status,
-            statusText: error.response.statusText,
-            data: error.response.data
-              ? error.response.data.substring(0, 500)
-              : null,
-          }
-        : null,
+      details: info.status ? info : null,
     });
   }
 });
@@ -849,10 +900,11 @@ app.post("/api/login-and-fetch", async (req, res) => {
       message: `Comprehensive fetch completed - ${allBookings.length} bookings from ${fetchSummary.totalPagesProcessed} pages across ${searchTypes.length} search types`,
     });
   } catch (error) {
-    console.error("❌ Comprehensive fetch error:", error.message);
+    const info = logHttpError("Comprehensive fetch error", error);
     res.status(500).json({
       success: false,
       error: error.message,
+      details: info.status ? info : null,
     });
   }
 });
@@ -1068,10 +1120,11 @@ app.post(
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
-      console.error("❌ Facility fetch error:", error.message);
+      const info = logHttpError("Facility fetch error", error);
       res.status(500).json({
         success: false,
         error: error.message,
+        details: info.status ? info : null,
       });
     }
   },

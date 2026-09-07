@@ -10,7 +10,12 @@ async function authedFetch(url, opts = {}) {
     ...opts,
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}`, ...(opts.headers || {}) },
   });
-  if (r.status === 401 || r.status === 403) { redirectLogin(); throw new Error("auth"); }
+  // TẠM THỜI: không redirect về login khi API trả 401/403
+  if (r.status === 401 || r.status === 403) {
+    console.warn("Authentication failed:", r.status, url);
+    // redirectLogin();
+    throw new Error(`auth (HTTP ${r.status})`);
+  }
   return r;
 }
 
@@ -19,9 +24,10 @@ async function init() {
   try {
     const r = await authedFetch(`${API}/api/auth/verify`);
     const d = await r.json();
-    if (!d.success) { redirectLogin(); return; }
+    // TẠM THỜI: không redirect về login khi verify thất bại
+    if (!d.success) { console.warn("Auth verify returned success=false"); return; }
     document.getElementById("pageUser").textContent = `👤 ${d.user?.name || d.user?.username}`;
-  } catch (_) { redirectLogin(); return; }
+  } catch (e) { console.warn("Auth verify error:", e.message); return; }
 
   await loadDldConfig();
   await loadG2jConfig();
