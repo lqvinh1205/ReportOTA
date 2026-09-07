@@ -55,8 +55,120 @@ const baseUrl = process.env.OTA_BASE_URL || "https://id.bluejaypms.com";
 const loginPath = `${baseUrl}/login`;
 const reservationPath = `${baseUrl}/app/Reservation`;
 
+// Cloudflare (đứng trước OTA) chặn IP datacenter với 403 "Sorry, you have been blocked".
+// Nếu IP server không được whitelist, đặt OTA_PROXY trỏ tới proxy có IP được chấp nhận
+// (vd: OTA_PROXY=http://user:pass@1.2.3.4:8080). Chỉ request tới host OTA đi qua proxy,
+// các call khác (Telegram, DLD, Go2Joy) vẫn đi trực tiếp.
+const otaProxyUrl = process.env.OTA_PROXY || "";
+const otaHost = new URL(baseUrl).host;
+
+function parseProxyUrl(raw) {
+  const u = new URL(raw);
+  const proxy = {
+    protocol: u.protocol.replace(":", ""),
+    host: u.hostname,
+    port: Number(u.port) || (u.protocol === "https:" ? 443 : 80),
+  };
+  if (u.username) {
+    proxy.auth = {
+      username: decodeURIComponent(u.username),
+      password: decodeURIComponent(u.password || ""),
+    };
+  }
+  return proxy;
+}
+
+if (otaProxyUrl) {
+  try {
+    const otaProxy = parseProxyUrl(otaProxyUrl);
+    axios.interceptors.request.use((config) => {
+      const target = new URL(config.url, baseUrl);
+      if (target.host === otaHost) {
+        config.proxy = otaProxy;
+      }
+      return config;
+    });
+    console.log(
+      `🌐 OTA proxy enabled: ${otaProxy.protocol}://${otaProxy.host}:${otaProxy.port} (chỉ cho ${otaHost})`,
+    );
+  } catch (e) {
+    console.error("❌ OTA_PROXY không hợp lệ, bỏ qua:", e.message);
+  }
+}
+
 // Store session cookies
 let sessionCookies = "";
+
+// Số ký tự body giữ lại khi log lỗi HTTP. Trang block của Cloudflare đặt mã lỗi
+// ở cuối trang nên cần đủ dài; hạ xuống nếu log quá ồn.
+const HTTP_ERROR_BODY_CHARS = Number(process.env.HTTP_ERROR_BODY_CHARS) || 8000;
+
+// Turns any HTTP/axios failure into a readable, loggable description.
+// Captures status, the response headers that identify a WAF/proxy block
+// (server, cf-ray, x-request-id...) and the beginning of the response body,
+// which is where the OTA/WAF puts the actual reason for a 403.
+function describeHttpError(label, error) {
+  const res = error.response;
+  const info = {
+    label,
+    message: error.message,
+    code: error.code || null,
+    url: error.config ? `${(error.config.method || "get").toUpperCase()} ${error.config.url}` : null,
+    status: res ? res.status : null,
+    statusText: res ? res.statusText : null,
+    headers: res
+      ? {
+          server: res.headers["server"],
+          "content-type": res.headers["content-type"],
+          "cf-ray": res.headers["cf-ray"],
+          "cf-mitigated": res.headers["cf-mitigated"],
+          "x-request-id": res.headers["x-request-id"],
+          "x-amzn-waf-action": res.headers["x-amzn-waf-action"],
+          location: res.headers["location"],
+          "retry-after": res.headers["retry-after"],
+          "www-authenticate": res.headers["www-authenticate"],
+        }
+      : null,
+    body: res ? bodyToText(res.data).slice(0, HTTP_ERROR_BODY_CHARS) : null,
+  };
+  // Mã lỗi Cloudflare nằm ở cuối trang block ("Error 1020", "error code: 1015"...)
+  // và quyết định block có tự hết hay phải chủ site mở - trích riêng cho dễ đọc.
+  if (res) {
+    const full = bodyToText(res.data);
+    const code = full.match(/[Ee]rror(?:\s+code:?)?\s*(1\d{3})/);
+    const ray = full.match(/Cloudflare Ray ID:\s*<\/strong>\s*<span[^>]*>([a-f0-9]+)/i);
+    if (code || ray) {
+      info.cloudflare = {
+        errorCode: code ? code[1] : null,
+        rayId: ray ? ray[1] : res.headers["cf-ray"] || null,
+      };
+    }
+  }
+  return info;
+}
+
+// Response bodies can be a string, Buffer, stream or object - normalize before slicing.
+function bodyToText(data) {
+  if (data == null) return "";
+  if (typeof data === "string") return data;
+  if (Buffer.isBuffer(data)) return data.toString("utf8");
+  try {
+    return JSON.stringify(data);
+  } catch (e) {
+    return String(data);
+  }
+}
+
+function logHttpError(label, error) {
+  const info = describeHttpError(label, error);
+  console.error(`\u274c ${label}: ${info.message}`);
+  if (info.url) console.error("   request:", info.url);
+  if (info.status) console.error("   status:", info.status, info.statusText || "");
+  if (info.headers) console.error("   headers:", JSON.stringify(info.headers));
+  if (info.cloudflare) console.error("   cloudflare:", JSON.stringify(info.cloudflare));
+  if (info.body) console.error("   body:\n" + info.body);
+  return info;
+}
 
 // Helper function to extract cookies from response
 function extractCookies(response) {
