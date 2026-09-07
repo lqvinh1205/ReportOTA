@@ -27,6 +27,48 @@ const LOGIN_PATH = `${BASE_URL}/login`;
 const RESERVATION_PATH = `${BASE_URL}/app/Reservation`;
 const MONITOR_INTERVAL = parseInt(process.env.MONITOR_INTERVAL_MS) || 3 * 60 * 1000;
 
+// Cloudflare (đứng trước OTA) chặn IP datacenter với 403 "Sorry, you have been blocked".
+// Nếu IP server không được whitelist, đặt OTA_PROXY trỏ tới proxy có IP được chấp nhận
+// (vd: OTA_PROXY=http://user:pass@1.2.3.4:8080). Chỉ request tới host OTA đi qua proxy,
+// các call khác (Telegram, DLD, Go2Joy) vẫn đi trực tiếp.
+// Giữ giống server.js:58-97 — sửa một bên thì phải sửa cả bên kia.
+const otaProxyUrl = process.env.OTA_PROXY || "";
+const otaHost = new URL(BASE_URL).host;
+
+function parseProxyUrl(raw) {
+  const u = new URL(raw);
+  const proxy = {
+    protocol: u.protocol.replace(":", ""),
+    host: u.hostname,
+    port: Number(u.port) || (u.protocol === "https:" ? 443 : 80),
+  };
+  if (u.username) {
+    proxy.auth = {
+      username: decodeURIComponent(u.username),
+      password: decodeURIComponent(u.password || ""),
+    };
+  }
+  return proxy;
+}
+
+if (otaProxyUrl) {
+  try {
+    const otaProxy = parseProxyUrl(otaProxyUrl);
+    axios.interceptors.request.use((config) => {
+      const target = new URL(config.url, BASE_URL);
+      if (target.host === otaHost) {
+        config.proxy = otaProxy;
+      }
+      return config;
+    });
+    log(
+      `🌐 OTA proxy enabled: ${otaProxy.protocol}://${otaProxy.host}:${otaProxy.port} (chỉ cho ${otaHost})`,
+    );
+  } catch (e) {
+    log(`❌ OTA_PROXY không hợp lệ, bỏ qua: ${e.message}`);
+  }
+}
+
 const { getTextPayment } = require("./utils/booking-utils");
 const otaSession = require("./utils/ota-session");
 const { sendAdminAlert } = require("./utils/telegram");
