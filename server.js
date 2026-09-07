@@ -338,6 +338,7 @@ async function performLogin(facilityEmail = null, facilityPassword = null) {
       ddlLangCode: "vi-VN",
       txtEmail: email,
       txtPassword: password,
+      hfClientTime: new Date().toISOString(),
     });
 
     // Perform login
@@ -647,6 +648,7 @@ app.post("/api/login-and-fetch", async (req, res) => {
       ddlLangCode: "vi-VN",
       txtEmail: params.txtEmail, // Use the same params as /api/login
       txtPassword: params.txtPassword, // Use the same params as /api/login
+      hfClientTime: new Date().toISOString(),
     });
 
     // Perform login using the same headers as /api/login
