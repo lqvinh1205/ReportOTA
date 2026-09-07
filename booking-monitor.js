@@ -28,6 +28,8 @@ const RESERVATION_PATH = `${BASE_URL}/app/Reservation`;
 const MONITOR_INTERVAL = parseInt(process.env.MONITOR_INTERVAL_MS) || 3 * 60 * 1000;
 
 const { getTextPayment } = require("./utils/booking-utils");
+const otaSession = require("./utils/ota-session");
+const { sendAdminAlert } = require("./utils/telegram");
 
 const USERS_FILE = path.join(__dirname, "config", "users.json");
 const FACILITIES_FILE = path.join(__dirname, "config", "facilities.json");
@@ -195,6 +197,9 @@ async function performLogin(email, password) {
       ddlLangCode: "vi-VN",
       txtEmail: email,
       txtPassword: password,
+      // Phải khớp với server.js (commit 7274480) — thiếu field này monitor có
+      // thể bị OTA từ chối trong khi server.js vẫn login được.
+      hfClientTime: new Date().toISOString(),
     });
 
     const loginResp = await axios.post(LOGIN_PATH, loginData.toString(), {
@@ -209,7 +214,17 @@ async function performLogin(email, password) {
     }
     return { success: true, cookies, redirectLocation: loginResp.headers.location };
   } catch (e) {
-    return { success: false, error: e.message };
+    // Phải giữ status + body: utils/ota-session dựa vào đây để phân biệt lỗi
+    // hạ tầng (403 Cloudflare, 5xx, timeout) với lỗi sai mật khẩu. Chỉ trả
+    // e.message thì một cú 403 sẽ bị tính là sai mật khẩu và khóa oan tài khoản.
+    return {
+      success: false,
+      error: e.message,
+      otaStatus: e.response ? e.response.status : null,
+      details: e.response
+        ? { status: e.response.status, data: String(e.response.data || "").slice(0, 2000) }
+        : null,
+    };
   }
 }
 
@@ -380,21 +395,44 @@ async function fetchPage(cookies, roomType, searchType, page) {
     validateStatus: (s) => s >= 200 && s < 400,
   });
 
-  if (isRedirectToLogin(resp)) return { success: false, error: "Session hết hạn, cần đăng nhập lại" };
+  // sessionExpired là cờ để utils/ota-session biết cần hủy cache và login lại
+  // đúng một lần (withSession), thay vì bỏ luôn trang này như trước.
+  if (isRedirectToLogin(resp)) {
+    return { success: false, sessionExpired: true, error: "Session hết hạn, cần đăng nhập lại" };
+  }
   return { success: true, ...parseBookings(resp.data) };
+}
+
+// Gọi fetchPage qua session cache: dùng cookie đã lưu, nếu OTA từ chối thì hủy
+// cache, login lại một lần rồi thử lại đúng trang đó.
+// Trả về kết quả của fetchPage, hoặc { success:false, error, code } khi không
+// lấy được session (bị khóa / circuit mở / login lỗi).
+async function fetchPageWithSession(facility, roomType, searchType, page, username) {
+  const r = await otaSession.withSession(
+    facility,
+    loginFacility,
+    (cookies) => fetchPage(cookies, roomType, searchType, page),
+    { log: (m) => log(m, username) },
+  );
+  if (r.ok) return r.result;
+  return { success: false, error: r.error, code: r.code, ...(r.result || {}) };
 }
 
 // ─── Fetch ALL pages for a facility ──────────────────────────────────────────
 async function fetchAllBookings(facilityId, facility, username) {
   log(`📥 Lấy toàn bộ booking cho ${facility.name}...`, username);
 
-  const loginResult = await loginFacility(facility);
-  if (!loginResult.success) {
-    log(`❌ Đăng nhập thất bại (${facility.name}): ${loginResult.error}`, username);
-    return { success: false, error: loginResult.error };
+  const loginResult = await otaSession.ensureFacilityCookies(facility, loginFacility, {
+    log: (m) => log(m, username),
+  });
+  if (!loginResult.ok) {
+    log(`❌ Không lấy được session (${facility.name}) [${loginResult.code}]: ${loginResult.error}`, username);
+    return { success: false, error: loginResult.error, code: loginResult.code };
+  }
+  if (loginResult.fromCache) {
+    log(`♻️  Dùng session đã lưu cho ${facility.name}`, username);
   }
 
-  const { cookies } = loginResult;
   const allBookings = [];
   const seenKeys = new Set();
   const pageTracker = {};
@@ -406,7 +444,7 @@ async function fetchAllBookings(facilityId, facility, username) {
       let totalPages = 1;
 
       do {
-        const result = await fetchPage(cookies, roomType, searchType, currentPage);
+        const result = await fetchPageWithSession(facility, roomType, searchType, currentPage, username);
         if (!result.success) {
           log(`  ⚠️  ${searchType.name} trang ${currentPage}: ${result.error}`, username);
           break;
@@ -472,24 +510,11 @@ async function sendTelegram(message, botToken, chatId, username) {
   }
 }
 
-// Gửi lỗi hệ thống về kênh Telegram admin chung (không phải bot/chat riêng của user)
+// Gửi lỗi hệ thống về kênh Telegram admin chung (không phải bot/chat riêng của user).
+// Cài đặt thật nằm ở utils/telegram.js để utils/ota-session.js và server.js cũng
+// báo được về cùng kênh này.
 async function sendTelegramError(message, username) {
-  const botToken = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!botToken || !chatId) {
-    log("⚠️  Thiếu TELEGRAM_BOT_TOKEN hoặc TELEGRAM_CHAT_ID (env)", username);
-    return;
-  }
-  try {
-    await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-      chat_id: chatId,
-      text: message,
-      parse_mode: "HTML",
-    });
-    log("📨 Đã gửi Telegram lỗi (admin)", username);
-  } catch (e) {
-    log(`❌ Gửi Telegram lỗi thất bại: ${e.message}`, username);
-  }
+  return sendAdminAlert(message, (m) => log(m, username));
 }
 
 function formatBookingMessage(b) {
@@ -555,26 +580,30 @@ async function buildUserSnapshot(user) {
 }
 
 // ─── Monitor: check last page (1 facility) ────────────────────────────────────
-async function checkFacility(facilityId, facility, snapshot, user) {
+async function checkFacility(facilityId, facility, snapshot, user, loggedKeys) {
   const facilityNewBookings = [];
   const pageTrackerUpdates = {};
   const seenKeys = new Set(snapshot.bookingKeys);
+  const empty = { newBookings: [], pageTrackerUpdates: {} };
 
-  let cookies;
   try {
-    const loginResult = await loginFacility(facility);
-    if (!loginResult.success) {
-      log(`⚠️  Không đăng nhập được ${facility.name}: ${loginResult.error}`, user.username);
-      await sendTelegramError(
-        `⚠️ <b>Lỗi kết nối</b> [${user.username}]\nFacility: ${facility.name}\nLỗi: ${loginResult.error}\nĐang thử lại sau...`,
-        user.username
-      );
-      return { newBookings: [], pageTrackerUpdates: {} };
+    const sess = await otaSession.ensureFacilityCookies(facility, loginFacility, {
+      log: (m) => log(m, user.username),
+    });
+    if (!sess.ok) {
+      // Log một lần cho mỗi TÀI KHOẢN mỗi tick: 6 cơ sở dùng chung một tài
+      // khoản bị khóa thì trước đây in 6 dòng và gửi 6 tin Telegram.
+      if (!loggedKeys || !loggedKeys.has(sess.key)) {
+        if (loggedKeys) loggedKeys.add(sess.key);
+        log(`⚠️  Bỏ qua ${facility.email} [${sess.code}]: ${sess.error}`, user.username);
+      }
+      // Không gửi Telegram ở đây nữa — utils/ota-session đã gửi đúng một lần
+      // khi khóa tài khoản hoặc khi mở circuit breaker.
+      return empty;
     }
-    cookies = loginResult.cookies;
   } catch (e) {
     log(`❌ Exception login ${facility.name}: ${e.message}`, user.username);
-    return { newBookings: [], pageTrackerUpdates: {} };
+    return empty;
   }
 
   for (const roomType of facility.roomTypes) {
@@ -583,7 +612,7 @@ async function checkFacility(facilityId, facility, snapshot, user) {
       const prevTotalPages = snapshot.pageTracker[trackerKey] || 1;
 
       try {
-        const lastPageResult = await fetchPage(cookies, roomType, searchType, prevTotalPages);
+        const lastPageResult = await fetchPageWithSession(facility, roomType, searchType, prevTotalPages, user.username);
         if (!lastPageResult.success) {
           log(`  ⚠️  [${facility.name}] Lỗi lấy trang ${prevTotalPages} (${searchType.name}): ${lastPageResult.error}`, user.username);
           continue;
@@ -600,7 +629,7 @@ async function checkFacility(facilityId, facility, snapshot, user) {
         for (const page of pagesToCheck) {
           let result = lastPageResult;
           if (page !== prevTotalPages) {
-            result = await fetchPage(cookies, roomType, searchType, page);
+            result = await fetchPageWithSession(facility, roomType, searchType, page, user.username);
             await sleep(200);
           }
           if (!result.success) continue;
@@ -633,12 +662,24 @@ async function checkFacility(facilityId, facility, snapshot, user) {
 
 // ─── Monitor: check all facilities for one user ───────────────────────────────
 async function checkUserBookings(user, snapshot) {
+  // Circuit breaker mở = hạ tầng đang chặn (Cloudflare 403, timeout...). Chặn ở
+  // đây thì cả tick không phát sinh request nào, kể cả request report — đúng
+  // điều kiện để một block theo IP có cơ hội tự hết.
+  const cb = otaSession.circuitState();
+  if (cb.open) {
+    log(`⛔ Circuit breaker đang mở tới ${cb.openUntil} (${cb.lastError || "lỗi hạ tầng"}) — bỏ qua tick`, user.username);
+    return [];
+  }
+
   const facilities = loadUserFacilities(user.facilities);
   log(`🚀 Kiểm tra song song ${Object.keys(facilities).length} cơ sở...`, user.username);
 
+  // Dùng chung giữa các facility trong cùng tick để chỉ log một lần cho mỗi
+  // tài khoản OTA bị khóa/bị chặn.
+  const loggedKeys = new Set();
   const results = await Promise.all(
     Object.entries(facilities).map(([facilityId, facility]) =>
-      checkFacility(facilityId, facility, snapshot, user)
+      checkFacility(facilityId, facility, snapshot, user, loggedKeys)
     )
   );
 
@@ -1049,28 +1090,44 @@ async function monitorLoop() {
 }
 
 // ─── CLI commands ─────────────────────────────────────────────────────────────
-const command = process.argv[2];
-const targetUsername = process.argv[3] || null;
+// Chỉ chạy khi được gọi trực tiếp (node booking-monitor.js), để file này còn
+// require được từ script test mà không khởi động vòng lặp monitor.
+if (require.main === module) {
+  const command = process.argv[2];
+  const targetUsername = process.argv[3] || null;
 
-if (command === "snapshot") {
-  (async () => {
-    const users = loadActiveUsers();
-    const targets = targetUsername ? users.filter((u) => u.username === targetUsername) : users;
-    if (targets.length === 0) {
-      log(`❌ Không tìm thấy user "${targetUsername || ""}" trong users.json`);
+  if (command === "snapshot") {
+    (async () => {
+      const users = loadActiveUsers();
+      const targets = targetUsername ? users.filter((u) => u.username === targetUsername) : users;
+      if (targets.length === 0) {
+        log(`❌ Không tìm thấy user "${targetUsername || ""}" trong users.json`);
+        process.exit(1);
+      }
+      let allOk = true;
+      for (const user of targets) {
+        const ok = await buildUserSnapshot(user);
+        if (!ok) allOk = false;
+      }
+      log(allOk ? "✅ Snapshot hoàn tất" : "⚠️  Một số snapshot thất bại");
+      process.exit(allOk ? 0 : 1);
+    })();
+  } else {
+    monitorLoop().catch((e) => {
+      log(`💥 Lỗi nghiêm trọng: ${e.message}`);
       process.exit(1);
-    }
-    let allOk = true;
-    for (const user of targets) {
-      const ok = await buildUserSnapshot(user);
-      if (!ok) allOk = false;
-    }
-    log(allOk ? "✅ Snapshot hoàn tất" : "⚠️  Một số snapshot thất bại");
-    process.exit(allOk ? 0 : 1);
-  })();
-} else {
-  monitorLoop().catch((e) => {
-    log(`💥 Lỗi nghiêm trọng: ${e.message}`);
-    process.exit(1);
-  });
+    });
+  }
 }
+
+module.exports = {
+  performLogin,
+  loginFacility,
+  resolveMultiHotel,
+  fetchPage,
+  fetchPageWithSession,
+  checkFacility,
+  checkUserBookings,
+  loadUserFacilities,
+  loadActiveUsers,
+};

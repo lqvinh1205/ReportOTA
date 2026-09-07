@@ -18,6 +18,7 @@ const {
   getUserOtaConfig,
   saveUserOtaConfig,
 } = require("./middleware/auth");
+const otaSession = require("./utils/ota-session");
 
 // Load environment variables
 require("dotenv").config();
@@ -473,7 +474,76 @@ app.get("/api/report", async (req, res) => {
 });
 
 // Facility and RoomType configuration - Load from config file
-const facilities = loadFacilities();
+let facilities = loadFacilities();
+
+// facilities.json giờ vừa là config vừa là nơi lưu session/cờ khóa, và
+// booking-monitor.js (process khác) cũng ghi vào đó. Trước đây file này chỉ
+// được đọc một lần lúc boot nên admin sửa gì cũng phải restart container —
+// và tệ hơn: server.js sẽ giữ mật khẩu cũ trong khi monitor đã dùng mật khẩu
+// mới, khiến hai process luân phiên hủy session của nhau.
+// Middleware này đọc lại khi file đổi (so sánh mtime), nên ~12 chỗ dùng biến
+// `facilities` bên dưới không phải sửa gì.
+app.use((req, res, next) => {
+  const fresh = otaSession.getFacilities();
+  if (fresh && Object.keys(fresh).length) facilities = fresh;
+  next();
+});
+
+// Ánh xạ lỗi session sang HTTP. LƯU Ý: không dùng 401/403 cho trường hợp khóa
+// tài khoản OTA — fetchWithAuth (script.js) và authedFetch (ota-settings.js)
+// coi 401/403 là "hết phiên đăng nhập" và redirect thẳng về login.html, admin
+// sẽ bị đá ra ngoài thay vì đọc được thông báo.
+function sendOtaSessionError(res, sess, facilityId, facility) {
+  const facilityInfo = { id: facilityId, name: facility && facility.name };
+  switch (sess.code) {
+    case "LOCKED":
+      return res.status(423).json({
+        success: false,
+        code: "OTA_ACCOUNT_LOCKED",
+        error: sess.error,
+        facility: facilityInfo,
+        account: {
+          key: sess.key,
+          lockedAt: sess.lockedAt,
+          lockReason: sess.lockReason,
+          consecutiveFailures: sess.consecutiveFailures,
+        },
+      });
+    case "CIRCUIT_OPEN":
+      res.set("Retry-After", String(Math.ceil((sess.retryAfterMs || 0) / 1000)));
+      return res.status(503).json({
+        success: false,
+        code: "OTA_CIRCUIT_OPEN",
+        error: sess.error,
+        facility: facilityInfo,
+        openUntil: sess.openUntil,
+        retryAfterSeconds: Math.ceil((sess.retryAfterMs || 0) / 1000),
+      });
+    case "NO_CREDENTIALS":
+      return res.status(500).json({
+        success: false,
+        code: "OTA_NO_CREDENTIALS",
+        error: sess.error,
+        facility: facilityInfo,
+      });
+    case "SESSION_REJECTED":
+      return res.status(401).json({
+        success: false,
+        code: "OTA_SESSION_REJECTED",
+        error: sess.error,
+        facility: facilityInfo,
+      });
+    default:
+      return res.status(401).json({
+        success: false,
+        code: "OTA_LOGIN_FAILED",
+        error: sess.error,
+        facility: facilityInfo,
+        consecutiveFailures: sess.consecutiveFailures,
+        remainingAttempts: sess.remainingAttempts,
+      });
+  }
+}
 
 // ===== AUTHENTICATION ENDPOINTS =====
 
@@ -880,21 +950,18 @@ app.post(
       );
 
       let requestCookies;
+      // Đã login lại một lần vì session bị OTA từ chối? (chống vòng lặp login)
+      let retriedLogin = false;
       {
-        const resolved = await loginAndResolveCookies(facility);
-        if (!resolved.success) {
-          return res.status(401).json({
-            success: false,
-            error: resolved.error,
-            facility: { id: facilityId, name: facility.name, email: facility.email },
-            otaStatus: resolved.otaStatus || null,
-            redirectLocation: resolved.redirectLocation || null,
-          });
-        }
-        requestCookies = resolved.cookies;
+        const sess = await otaSession.ensureFacilityCookies(facility, loginAndResolveCookies);
+        if (!sess.ok) return sendOtaSessionError(res, sess, facilityId, facility);
+        requestCookies = sess.cookies;
+        console.log(
+          sess.fromCache
+            ? `♻️  Dùng session đã lưu cho ${facility.name}`
+            : `✅ Login successful for facility: ${facility.name}`,
+        );
       }
-
-      console.log("✅ Login successful for facility:", facility.name);
 
       // Define search types
       const searchTypes = [
@@ -972,8 +1039,23 @@ app.post(
             });
 
             if (isRedirectToLogin(reportResponse)) {
+              // Session (có thể lấy từ cache) đã chết: hủy cache, login lại
+              // ĐÚNG MỘT LẦN rồi thử lại chính trang này.
+              if (!retriedLogin) {
+                retriedLogin = true;
+                console.log("🔄 OTA session hết hạn, đăng nhập lại...");
+                otaSession.invalidate(otaSession.accountKey(facility), requestCookies);
+                const again = await otaSession.ensureFacilityCookies(
+                  facility,
+                  loginAndResolveCookies,
+                );
+                if (!again.ok) return sendOtaSessionError(res, again, facilityId, facility);
+                requestCookies = again.cookies;
+                continue; // thử lại cùng currentPage với cookie mới
+              }
               return res.status(401).json({
                 success: false,
+                code: "OTA_SESSION_REJECTED",
                 error:
                   "OTA session is not authenticated. Reservation request was redirected to login.",
                 facility: {
@@ -1094,26 +1176,40 @@ app.get("/api/health", (req, res) => {
 
 // Reusable: login + fetch calendar + build room list for a facility
 async function fetchRoomListForFacility(facility) {
-  console.log("🔐 Logging in for room list...");
-  const { success: loginOk, cookies, error: loginErr } = await loginAndResolveCookies(facility);
-  if (!loginOk) {
-    return { success: false, error: loginErr };
+  const calendarUrl = `${baseUrl}/app/calendar`;
+
+  // withSession: dùng cookie đã lưu; nếu OTA redirect về /login thì hủy cache,
+  // login lại đúng một lần và thử lại.
+  const outcome = await otaSession.withSession(
+    facility,
+    loginAndResolveCookies,
+    async (cookies) => {
+      console.log("🌐 Fetching calendar page for room list...");
+      return axios.get(calendarUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+          Accept:
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
+          Cookie: cookies,
+          "Cache-Control": "no-cache",
+        },
+        // Trước đây không đặt maxRedirects nên axios tự theo redirect về
+        // /login, rồi extractCalendarOptionData parse trang login và báo
+        // "Failed to extract calendar data" — sai nguyên nhân. Với session
+        // cache thì lỗi này xảy ra thường xuyên hơn, nên phải chặn redirect.
+        maxRedirects: 0,
+        validateStatus: (s) => s >= 200 && s < 400,
+      });
+    },
+    { isRejected: (resp) => isRedirectToLogin(resp) },
+  );
+
+  if (!outcome.ok) {
+    return { success: false, error: outcome.error, code: outcome.code, sessionError: outcome };
   }
 
-  const calendarUrl = `${baseUrl}/app/calendar`;
-  console.log("🌐 Fetching calendar page for room list...");
-
-  const calendarResponse = await axios.get(calendarUrl, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-      Accept:
-        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
-      Cookie: cookies,
-      "Cache-Control": "no-cache",
-    },
-  });
-
+  const calendarResponse = outcome.result;
   if (calendarResponse.status !== 200) {
     return { success: false, error: `Calendar page request failed: ${calendarResponse.status}` };
   }
@@ -1169,8 +1265,12 @@ app.post(
       const facility = facilities[facilityId];
       console.log(`🏠 Getting room list for facility: ${facility.name}`);
 
-      const { success: roomsOk, roomList, error: roomsErr } = await fetchRoomListForFacility(facility);
+      const roomsOutcome = await fetchRoomListForFacility(facility);
+      const { success: roomsOk, roomList, error: roomsErr } = roomsOutcome;
       if (!roomsOk) {
+        if (roomsOutcome.sessionError) {
+          return sendOtaSessionError(res, roomsOutcome.sessionError, facilityId, facility);
+        }
         return res.status(401).json({
           success: false,
           error: roomsErr,
@@ -1324,14 +1424,13 @@ app.post(
         `💰 Generating revenue report for facility: ${facility.name} (${fromDate} - ${toDate})`,
       );
 
-      // Login - use returned cookies locally
-      const { success: revenueLoginOk, cookies: revenueCookies, error: revenueLoginErr } = await loginAndResolveCookies(facility);
-      if (!revenueLoginOk) {
-        return res.status(401).json({
-          success: false,
-          error: revenueLoginErr,
-          facility: { id: facilityId, name: facility.name },
-        });
+      // Session dùng lại từ cache, chỉ login khi cần
+      let revenueCookies;
+      let revenueRetried = false;
+      {
+        const sess = await otaSession.ensureFacilityCookies(facility, loginAndResolveCookies);
+        if (!sess.ok) return sendOtaSessionError(res, sess, facilityId, facility);
+        revenueCookies = sess.cookies;
       }
 
       // Fetch bookings for the date range with TypeSeachDate=0 (check-in/arrival)
@@ -1377,8 +1476,36 @@ app.post(
                 Referer: `${baseUrl}/`,
                 Cookie: revenueCookies,
               },
-              maxRedirects: 5,
+              // BUG cũ: maxRedirects: 5 khiến session chết bị axios tự follow
+              // về trang /login, rồi parseBookingData parse trang login và trả
+              // về BÁO CÁO DOANH THU 0 BOOKING với success: true. Trước đây bị
+              // che vì mọi request đều login mới; có session cache thì nó xảy
+              // ra thật. Phải chặn redirect và xử lý tường minh.
+              maxRedirects: 0,
+              validateStatus: (s) => s >= 200 && s < 400,
             });
+
+            if (isRedirectToLogin(reportResponse)) {
+              if (!revenueRetried) {
+                revenueRetried = true;
+                console.log("🔄 OTA session hết hạn, đăng nhập lại...");
+                otaSession.invalidate(otaSession.accountKey(facility), revenueCookies);
+                const again = await otaSession.ensureFacilityCookies(
+                  facility,
+                  loginAndResolveCookies,
+                );
+                if (!again.ok) return sendOtaSessionError(res, again, facilityId, facility);
+                revenueCookies = again.cookies;
+                continue; // thử lại cùng trang với cookie mới
+              }
+              return res.status(401).json({
+                success: false,
+                code: "OTA_SESSION_REJECTED",
+                error:
+                  "OTA session is not authenticated. Revenue request was redirected to login.",
+                facility: { id: facilityId, name: facility.name },
+              });
+            }
 
             const parsedData = parseBookingData(reportResponse.data);
 
