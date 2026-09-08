@@ -57,10 +57,14 @@ const reservationPath = `${baseUrl}/app/Reservation`;
 
 // Cloudflare (đứng trước OTA) chặn IP datacenter với 403 "Sorry, you have been blocked".
 // Nếu IP server không được whitelist, đặt OTA_PROXY trỏ tới proxy có IP được chấp nhận
-// (vd: OTA_PROXY=http://user:pass@1.2.3.4:8080). Chỉ request tới host OTA đi qua proxy,
-// các call khác (Telegram, DLD, Go2Joy) vẫn đi trực tiếp.
+// (vd: OTA_PROXY=http://user:pass@1.2.3.4:8080). Đặt TELEGRAM_PROXY tương tự nếu cần
+// route riêng request tới api.telegram.org qua proxy. Mỗi proxy chỉ áp dụng cho đúng
+// host tương ứng, các call khác (DLD, Go2Joy...) vẫn đi trực tiếp.
+// Giữ giống booking-monitor.js:30-71 — sửa một bên thì phải sửa cả bên kia.
 const otaProxyUrl = process.env.OTA_PROXY || "";
+const telegramProxyUrl = process.env.TELEGRAM_PROXY || "";
 const otaHost = new URL(baseUrl).host;
+const TELEGRAM_HOST = "api.telegram.org";
 
 function parseProxyUrl(raw) {
   const u = new URL(raw);
@@ -78,22 +82,35 @@ function parseProxyUrl(raw) {
   return proxy;
 }
 
+const hostProxies = {};
 if (otaProxyUrl) {
   try {
-    const otaProxy = parseProxyUrl(otaProxyUrl);
-    axios.interceptors.request.use((config) => {
-      const target = new URL(config.url, baseUrl);
-      if (target.host === otaHost) {
-        config.proxy = otaProxy;
-      }
-      return config;
-    });
+    hostProxies[otaHost] = parseProxyUrl(otaProxyUrl);
     console.log(
-      `🌐 OTA proxy enabled: ${otaProxy.protocol}://${otaProxy.host}:${otaProxy.port} (chỉ cho ${otaHost})`,
+      `🌐 OTA proxy enabled: ${hostProxies[otaHost].protocol}://${hostProxies[otaHost].host}:${hostProxies[otaHost].port} (chỉ cho ${otaHost})`,
     );
   } catch (e) {
     console.error("❌ OTA_PROXY không hợp lệ, bỏ qua:", e.message);
   }
+}
+if (telegramProxyUrl) {
+  try {
+    hostProxies[TELEGRAM_HOST] = parseProxyUrl(telegramProxyUrl);
+    console.log(
+      `🌐 Telegram proxy enabled: ${hostProxies[TELEGRAM_HOST].protocol}://${hostProxies[TELEGRAM_HOST].host}:${hostProxies[TELEGRAM_HOST].port} (chỉ cho ${TELEGRAM_HOST})`,
+    );
+  } catch (e) {
+    console.error("❌ TELEGRAM_PROXY không hợp lệ, bỏ qua:", e.message);
+  }
+}
+if (Object.keys(hostProxies).length) {
+  axios.interceptors.request.use((config) => {
+    const target = new URL(config.url, baseUrl);
+    if (hostProxies[target.host]) {
+      config.proxy = hostProxies[target.host];
+    }
+    return config;
+  });
 }
 
 // Store session cookies

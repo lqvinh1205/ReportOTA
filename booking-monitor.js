@@ -29,11 +29,14 @@ const MONITOR_INTERVAL = parseInt(process.env.MONITOR_INTERVAL_MS) || 3 * 60 * 1
 
 // Cloudflare (đứng trước OTA) chặn IP datacenter với 403 "Sorry, you have been blocked".
 // Nếu IP server không được whitelist, đặt OTA_PROXY trỏ tới proxy có IP được chấp nhận
-// (vd: OTA_PROXY=http://user:pass@1.2.3.4:8080). Chỉ request tới host OTA đi qua proxy,
-// các call khác (Telegram, DLD, Go2Joy) vẫn đi trực tiếp.
+// (vd: OTA_PROXY=http://user:pass@1.2.3.4:8080). Đặt TELEGRAM_PROXY tương tự nếu cần
+// route riêng request tới api.telegram.org qua proxy. Mỗi proxy chỉ áp dụng cho đúng
+// host tương ứng, các call khác (DLD, Go2Joy...) vẫn đi trực tiếp.
 // Giữ giống server.js:58-97 — sửa một bên thì phải sửa cả bên kia.
 const otaProxyUrl = process.env.OTA_PROXY || "";
+const telegramProxyUrl = process.env.TELEGRAM_PROXY || "";
 const otaHost = new URL(BASE_URL).host;
+const TELEGRAM_HOST = "api.telegram.org";
 
 function parseProxyUrl(raw) {
   const u = new URL(raw);
@@ -51,22 +54,35 @@ function parseProxyUrl(raw) {
   return proxy;
 }
 
+const hostProxies = {};
 if (otaProxyUrl) {
   try {
-    const otaProxy = parseProxyUrl(otaProxyUrl);
-    axios.interceptors.request.use((config) => {
-      const target = new URL(config.url, BASE_URL);
-      if (target.host === otaHost) {
-        config.proxy = otaProxy;
-      }
-      return config;
-    });
+    hostProxies[otaHost] = parseProxyUrl(otaProxyUrl);
     log(
-      `🌐 OTA proxy enabled: ${otaProxy.protocol}://${otaProxy.host}:${otaProxy.port} (chỉ cho ${otaHost})`,
+      `🌐 OTA proxy enabled: ${hostProxies[otaHost].protocol}://${hostProxies[otaHost].host}:${hostProxies[otaHost].port} (chỉ cho ${otaHost})`,
     );
   } catch (e) {
     log(`❌ OTA_PROXY không hợp lệ, bỏ qua: ${e.message}`);
   }
+}
+if (telegramProxyUrl) {
+  try {
+    hostProxies[TELEGRAM_HOST] = parseProxyUrl(telegramProxyUrl);
+    log(
+      `🌐 Telegram proxy enabled: ${hostProxies[TELEGRAM_HOST].protocol}://${hostProxies[TELEGRAM_HOST].host}:${hostProxies[TELEGRAM_HOST].port} (chỉ cho ${TELEGRAM_HOST})`,
+    );
+  } catch (e) {
+    log(`❌ TELEGRAM_PROXY không hợp lệ, bỏ qua: ${e.message}`);
+  }
+}
+if (Object.keys(hostProxies).length) {
+  axios.interceptors.request.use((config) => {
+    const target = new URL(config.url, BASE_URL);
+    if (hostProxies[target.host]) {
+      config.proxy = hostProxies[target.host];
+    }
+    return config;
+  });
 }
 
 const { getTextPayment } = require("./utils/booking-utils");
@@ -533,20 +549,21 @@ async function sendTelegram(message, botToken, chatId, username) {
     });
     log("📨 Đã gửi Telegram", username);
 
-    // Gửi lỗi hệ thống về kênh Telegram admin chung (không phải bot/chat riêng của user)
-    const botTokenAdmin = process.env.TELEGRAM_BOT_TOKEN;
-    const chatIdAdmin = process.env.TELEGRAM_CHAT_ID;
-    if (botTokenAdmin && chatIdAdmin) {
-      await axios.post(
-        `https://api.telegram.org/bot${botTokenAdmin}/sendMessage`,
-        {
-          chat_id: chatIdAdmin,
-          text: message,
-          parse_mode: "HTML",
-        },
-      );
-      log("📨 Đã gửi Telegram lỗi (admin)", username);
-    }
+    // TODO(tạm thời 2026-09-08): tắt copy nội dung booking sang kênh admin để giảm
+    // tải/tránh 429 rate-limit Telegram. Lỗi thật vẫn báo admin qua sendTelegramError().
+    // const botTokenAdmin = process.env.TELEGRAM_BOT_TOKEN;
+    // const chatIdAdmin = process.env.TELEGRAM_CHAT_ID;
+    // if (botTokenAdmin && chatIdAdmin) {
+    //   await axios.post(
+    //     `https://api.telegram.org/bot${botTokenAdmin}/sendMessage`,
+    //     {
+    //       chat_id: chatIdAdmin,
+    //       text: message,
+    //       parse_mode: "HTML",
+    //     },
+    //   );
+    //   log("📨 Đã gửi Telegram lỗi (admin)", username);
+    // }
   } catch (e) {
     log(`❌ Gửi Telegram thất bại: ${e.message}`, username);
   }
