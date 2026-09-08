@@ -343,13 +343,16 @@ function recordInfraFailure(cls, log) {
 function recordInfraSuccess(log) {
   const cb = getCircuit();
   if (!cb.openUntil && !cb.consecutiveInfraFailures) return;
+  const wasOpen = !!cb.openUntil;
   mutateStore((next) => {
     next.circuitBreaker = { ...DEFAULT_CIRCUIT };
   });
-  sendAdminAlert(
-    "✅ <b>[OTA-CB] Đã kết nối lại OTA</b>\nCircuit breaker đóng, monitor chạy bình thường.",
-    log,
-  ).catch(() => {});
+  if (wasOpen) {
+    sendAdminAlert(
+      "✅ <b>[OTA-CB] Đã kết nối lại OTA</b>\nCircuit breaker đóng, monitor chạy bình thường.",
+      log,
+    ).catch(() => {});
+  }
 }
 
 function resetCircuit() {
