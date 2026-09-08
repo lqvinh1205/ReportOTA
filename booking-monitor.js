@@ -795,10 +795,14 @@ async function notifyNewBookings(user, newBookings) {
     byFacility[b.facilityName].push(b);
   }
 
-  for (const [facilityName, bookings] of Object.entries(byFacility)) {
+  const facilityEntries = Object.entries(byFacility);
+  for (let i = 0; i < facilityEntries.length; i++) {
+    const [facilityName, bookings] = facilityEntries[i];
     const lines = bookings.map(formatBookingMessage).join("\n");
     const msg = `🔔 <b>Booking mới - ${facilityName}</b>\n\n${lines}`;
     await sendTelegram(msg, user.telegram_bot_token, user.telegram_chat_id, user.username);
+    // Delay nhỏ giữa các lần gửi để tránh dồn dập vào cùng 1 chat_id gây 429 (Telegram rate-limit).
+    if (i < facilityEntries.length - 1) await sleep(1200);
   }
 
   log(`🎉 ${newBookings.length} booking mới (gửi Telegram: ${toNotify.length})`, user.username);
