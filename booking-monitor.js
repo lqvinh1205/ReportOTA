@@ -566,6 +566,9 @@ async function sendTelegram(message, botToken, chatId, username) {
     // }
   } catch (e) {
     log(`❌ Gửi Telegram thất bại: ${e.message}`, username);
+    if (e.response) {
+      log(`   ↳ Telegram response: ${JSON.stringify(e.response.data)}`, username);
+    }
   }
 }
 

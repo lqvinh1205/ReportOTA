@@ -21,7 +21,7 @@ const VERSION_MISMATCH_CODE = "API_GNR_009";
 // Seed value only; auto-corrected at runtime by discoverVersion() whenever
 // the API rejects a request with API_GNR_009 (version mismatch), so this
 // never needs to be hand-updated when Go2Joy ships a new SPA build.
-let currentVersion = "21.3.0";
+let currentVersion = "23.2.1";
 
 const BASE_HEADERS = {
   Accept: "application/json",
