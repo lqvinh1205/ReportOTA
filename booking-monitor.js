@@ -536,7 +536,9 @@ async function fetchAllBookings(facilityId, facility, username) {
 }
 
 // ─── Telegram (per-user) ──────────────────────────────────────────────────────
-async function sendTelegram(message, botToken, chatId, username) {
+const TELEGRAM_MAX_RETRIES = 5;
+
+async function sendTelegram(message, botToken, chatId, username, attempt = 0) {
   if (!botToken || !chatId) {
     log("⚠️  Thiếu telegram_bot_token hoặc telegram_chat_id", username);
     return;
@@ -565,6 +567,12 @@ async function sendTelegram(message, botToken, chatId, username) {
     //   log("📨 Đã gửi Telegram lỗi (admin)", username);
     // }
   } catch (e) {
+    const retryAfter = e.response?.status === 429 ? e.response.data?.parameters?.retry_after : null;
+    if (retryAfter && attempt < TELEGRAM_MAX_RETRIES) {
+      log(`⏳ Telegram 429, đợi ${retryAfter}s rồi gửi lại (lần ${attempt + 1}/${TELEGRAM_MAX_RETRIES})`, username);
+      await sleep(retryAfter * 1000);
+      return sendTelegram(message, botToken, chatId, username, attempt + 1);
+    }
     log(`❌ Gửi Telegram thất bại: ${e.message}`, username);
     if (e.response) {
       log(`   ↳ Telegram response: ${JSON.stringify(e.response.data)}`, username);
