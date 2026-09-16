@@ -19,6 +19,7 @@ const {
   saveUserOtaConfig,
 } = require("./middleware/auth");
 const otaSession = require("./utils/ota-session");
+const calendarData = require("./utils/calendar-data");
 
 // Load environment variables
 require("dotenv").config();
@@ -976,7 +977,7 @@ app.post(
   checkFacilityAccess,
   async (req, res) => {
     try {
-      const { facilityId, fromDate, toDate } = req.body;
+      const { facilityId } = req.body;
 
       if (!facilityId || !facilities[facilityId]) {
         return res.status(400).json({
@@ -986,195 +987,65 @@ app.post(
         });
       }
 
+      // fromDate/toDate không hợp lệ (rỗng, sai định dạng) sẽ làm dayjs trả về
+      // Invalid Date; Invalid Date.isAfter(...) luôn false nên vòng lặp tính
+      // đến/đi/lưu theo ngày bên dưới sẽ CHẠY VÔ HẠN — chặn sớm ở đây. Chuẩn
+      // hoá luôn về DD/MM/YYYY vì /app/calendar chỉ nhận format này.
+      const fromDate = normalizeToDMY(req.body.fromDate);
+      const toDate = normalizeToDMY(req.body.toDate);
+      if (!fromDate || !toDate) {
+        return res.status(400).json({
+          success: false,
+          error: "fromDate and toDate are required (format: YYYY-MM-DD or DD/MM/YYYY)",
+        });
+      }
+
       const facility = facilities[facilityId];
       console.log(
         `🏢 Starting comprehensive fetch for facility: ${facility.name}`,
       );
 
-      let requestCookies;
-      // Đã login lại một lần vì session bị OTA từ chối? (chống vòng lặp login)
-      let retriedLogin = false;
-      {
-        const sess = await otaSession.ensureFacilityCookies(facility, loginAndResolveCookies);
-        if (!sess.ok) return sendOtaSessionError(res, sess, facilityId, facility);
-        requestCookies = sess.cookies;
-        console.log(
-          sess.fromCache
-            ? `♻️  Dùng session đã lưu cho ${facility.name}`
-            : `✅ Login successful for facility: ${facility.name}`,
-        );
+      // Lấy 1 lần từ /app/calendar (đủ mọi roomType) thay vì roomType × 3
+      // TypeSeachDate (đến/đi/lưu) × trang như trước.
+      const calResult = await calendarData.fetchCalendarData(
+        facility,
+        loginAndResolveCookies,
+        fromDate,
+        toDate,
+        { log: console.log },
+      );
+      if (!calResult.ok) {
+        return sendOtaSessionError(res, calResult.sessionError || calResult, facilityId, facility);
       }
 
-      // Define search types
-      const searchTypes = [
-        { name: "Phòng đến", typeSeachDate: 0, description: "Check-in today" },
-        { name: "Phòng đi", typeSeachDate: 1, description: "Check-out today" },
-        {
-          name: "Phòng lưu",
-          typeSeachDate: 3,
-          description: "Currently staying",
-        },
-      ];
+      const mappedBookings = calendarData.mapBookingGroupToBookings(
+        calResult.bookingGroup,
+        calResult.listRoom,
+        { facilityId, facilityName: facility.name },
+      );
 
+      // Tính đến/đi/lưu cho từng ngày trong khoảng [fromDate, toDate], dedup
+      // theo (typeSeachDate, bookingCode) vì 1 booking "lưu" có thể khớp
+      // nhiều ngày liên tiếp trong khoảng.
       let allBookings = [];
-      let fetchSummary = {
-        facility: facility.name,
-        facilityId: facilityId,
-        totalBookings: 0,
-        totalRoomTypes: facility.roomTypes.length,
-        totalSearchTypes: searchTypes.length,
-        roomTypeSummary: [],
-      };
-
-      // Fetch data for each room type and search type combination
-      for (const roomType of facility.roomTypes) {
-        console.log(`\n🏠 Processing RoomType: ${roomType}`);
-
-        let roomTypeBookings = [];
-        let roomTypeSummary = {
-          roomType: roomType,
-          totalBookings: 0,
-          searchTypes: [],
-        };
-
-        for (const searchType of searchTypes) {
-          console.log(`  🔍 ${searchType.name} for RoomType ${roomType}...`);
-
-          let typeBookings = [];
-          let currentPage = 1;
-          let totalPages = 1;
-          let fetchedPages = 0;
-
-          do {
-            const pageParams = {
-              TypeSeachDate: searchType.typeSeachDate,
-              FromDate: fromDate,
-              ToDate: toDate,
-              RoomType: roomType,
-              RoomDetail: "",
-              SourceType: "",
-              Source: "",
-              Status: "1,0,3,4,2",
-              Seach: "",
-              IsExtensionFilder: true,
-              p: currentPage,
-            };
-
-            const queryString = new URLSearchParams(pageParams).toString();
-            const reportUrl = `${reservationPath}?${queryString}`;
-
-            const reportResponse = await axios.get(reportUrl, {
-              headers: {
-                "User-Agent":
-                  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-                Accept:
-                  "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
-                "Cache-Control": "no-cache",
-                Referer: `${baseUrl}/`,
-                Cookie: requestCookies,
-              },
-              maxRedirects: 0,
-              validateStatus: function (status) {
-                return status >= 200 && status < 400;
-              },
-            });
-
-            if (isRedirectToLogin(reportResponse)) {
-              // Session (có thể lấy từ cache) đã chết: hủy cache, login lại
-              // ĐÚNG MỘT LẦN rồi thử lại chính trang này.
-              if (!retriedLogin) {
-                retriedLogin = true;
-                console.log("🔄 OTA session hết hạn, đăng nhập lại...");
-                otaSession.invalidate(otaSession.accountKey(facility), requestCookies);
-                const again = await otaSession.ensureFacilityCookies(
-                  facility,
-                  loginAndResolveCookies,
-                );
-                if (!again.ok) return sendOtaSessionError(res, again, facilityId, facility);
-                requestCookies = again.cookies;
-                continue; // thử lại cùng currentPage với cookie mới
-              }
-              return res.status(401).json({
-                success: false,
-                code: "OTA_SESSION_REJECTED",
-                error:
-                  "OTA session is not authenticated. Reservation request was redirected to login.",
-                facility: {
-                  id: facilityId,
-                  name: facility.name,
-                },
-                reportUrl: reportUrl,
-                redirectLocation: reportResponse.headers.location || null,
-              });
-            }
-
-            const parsedData = parseBookingData(reportResponse.data);
-
-            if (parsedData.success) {
-              totalPages = parsedData.totalPages;
-
-              const bookingsWithInfo = parsedData.bookings.map((booking) => ({
-                ...booking,
-                facilityId: facilityId,
-                facilityName: facility.name,
-                roomType: roomType,
-                searchType: searchType.name,
-                typeSeachDate: searchType.typeSeachDate,
-              }));
-
-              typeBookings = typeBookings.concat(bookingsWithInfo);
-              fetchedPages++;
-
-              console.log(
-                `    ✅ Page ${currentPage}/${totalPages} - ${parsedData.bookingsOnPage} bookings`,
-              );
-
-              if (totalPages === 1) break;
-            } else {
-              console.log(`    ❌ Failed to parse page ${currentPage}`);
-              break;
-            }
-
-            currentPage++;
-
-            if (fetchedPages >= 20) {
-              console.log(`    ⚠️ Reached safety limit of 20 pages`);
-              break;
-            }
-
-            if (currentPage <= totalPages) {
-              await new Promise((resolve) => setTimeout(resolve, 200));
-            }
-          } while (currentPage <= totalPages);
-
-          roomTypeSummary.searchTypes.push({
-            name: searchType.name,
-            typeSeachDate: searchType.typeSeachDate,
-            bookings: typeBookings.length,
-            pages: fetchedPages,
-          });
-
-          roomTypeBookings = roomTypeBookings.concat(typeBookings);
-          console.log(
-            `    🎉 ${searchType.name} completed: ${typeBookings.length} bookings`,
-          );
-
-          await new Promise((resolve) => setTimeout(resolve, 300));
+      const seen = new Set();
+      let cursor = dayjs(fromDate, "DD/MM/YYYY");
+      const end = dayjs(toDate, "DD/MM/YYYY");
+      // fromDate/toDate đã validate ở đầu handler; safety cap chỉ là lưới an
+      // toàn thứ 2, không phải cơ chế chặn chính.
+      let safety = 0;
+      while (!cursor.isAfter(end, "day") && safety++ < 1000) {
+        const dateStr = cursor.format("DD/MM/YYYY");
+        const { arriving, departing, staying } = calendarData.categorizeByDate(mappedBookings, dateStr);
+        for (const b of [...arriving, ...departing, ...staying]) {
+          const key = `${b.typeSeachDate}:${b.bookingCode}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            allBookings.push(b);
+          }
         }
-
-        roomTypeSummary.totalBookings = roomTypeBookings.length;
-        fetchSummary.roomTypeSummary.push(roomTypeSummary);
-        allBookings = allBookings.concat(roomTypeBookings);
-
-        console.log(
-          `🏠 RoomType ${roomType} completed: ${roomTypeBookings.length} total bookings`,
-        );
-
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        cursor = cursor.add(1, "day");
       }
-
-      fetchSummary.totalBookings = allBookings.length;
 
       console.log(`\n🎊 FACILITY FETCH COMPLETED FOR ${facility.name}!`);
       console.log(`📊 Total bookings: ${allBookings.length}`);
@@ -1186,7 +1057,11 @@ app.post(
           name: facility.name,
           roomTypes: facility.roomTypes,
         },
-        summary: fetchSummary,
+        summary: {
+          facility: facility.name,
+          facilityId: facilityId,
+          totalBookings: allBookings.length,
+        },
         totalBookings: allBookings.length,
         bookings: allBookings,
         timestamp: new Date().toISOString(),
@@ -1218,73 +1093,7 @@ app.get("/api/health", (req, res) => {
 
 // Reusable: login + fetch calendar + build room list for a facility
 async function fetchRoomListForFacility(facility) {
-  const calendarUrl = `${baseUrl}/app/calendar`;
-
-  // withSession: dùng cookie đã lưu; nếu OTA redirect về /login thì hủy cache,
-  // login lại đúng một lần và thử lại.
-  const outcome = await otaSession.withSession(
-    facility,
-    loginAndResolveCookies,
-    async (cookies) => {
-      console.log("🌐 Fetching calendar page for room list...");
-      return axios.get(calendarUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-          Accept:
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
-          Cookie: cookies,
-          "Cache-Control": "no-cache",
-        },
-        // Trước đây không đặt maxRedirects nên axios tự theo redirect về
-        // /login, rồi extractCalendarOptionData parse trang login và báo
-        // "Failed to extract calendar data" — sai nguyên nhân. Với session
-        // cache thì lỗi này xảy ra thường xuyên hơn, nên phải chặn redirect.
-        maxRedirects: 0,
-        validateStatus: (s) => s >= 200 && s < 400,
-      });
-    },
-    { isRejected: (resp) => isRedirectToLogin(resp) },
-  );
-
-  if (!outcome.ok) {
-    return { success: false, error: outcome.error, code: outcome.code, sessionError: outcome };
-  }
-
-  const calendarResponse = outcome.result;
-  if (calendarResponse.status !== 200) {
-    return { success: false, error: `Calendar page request failed: ${calendarResponse.status}` };
-  }
-
-  console.log("✅ Calendar page loaded successfully");
-
-  // Extract room data from calendar
-  const calendarData = extractCalendarOptionData(calendarResponse.data);
-
-  if (!calendarData.success) {
-    return { success: false, error: "Failed to extract calendar data" };
-  }
-
-  // Filter rooms by facility room types
-  const facilityRooms = calendarData.listRoom.filter((room) => {
-    const roomTypeId =
-      room.RoomTypeId || room.Group || room.TypeRoomId || room.Type;
-    return facility.roomTypes.includes(roomTypeId);
-  });
-
-  // Transform room data to simple format for report generation
-  const roomList = facilityRooms.map((room) => ({
-    id: room.Id,
-    name: room.Name,
-    roomNumber: room.Number,
-    roomTypeId:
-      room.RoomTypeId || room.Group || room.TypeRoomId || room.Type,
-    floor: room.Floor || null,
-  }));
-
-  console.log(`✅ Found ${roomList.length} rooms for facility ${facility.name}`);
-
-  return { success: true, roomList };
+  return calendarData.getRoomList(facility, loginAndResolveCookies);
 }
 
 // New API endpoint to get list of rooms for a facility
@@ -1437,6 +1246,41 @@ app.post("/api/sync-room-counts", authenticateToken, async (req, res) => {
   }
 });
 
+// fromDate/toDate không hợp lệ (rỗng, sai định dạng) làm dayjs trả về Invalid
+// Date; Invalid Date.isAfter(...) luôn false nên bất kỳ vòng lặp nào tăng dần
+// theo ngày dựa trên 2 giá trị này sẽ CHẠY VÔ HẠN. Luôn chuẩn hoá về
+// DD/MM/YYYY (dùng cho BeginShowDate/EndShowDate của /app/calendar) trước khi
+// dùng trong 1 vòng lặp — script.js gửi 2 format khác nhau tuỳ màn hình:
+// "/api/login-and-fetch-facility" gửi ISO "YYYY-MM-DD" (script.js:121-122),
+// còn "/api/revenue-report" tự convert sang "DD/MM/YYYY" trước khi gửi
+// (script.js:1520-1521). Trả về null nếu không parse được theo cả 2 format.
+function normalizeToDMY(str) {
+  if (typeof str !== "string") return null;
+  const iso = dayjs(str, "YYYY-MM-DD", true);
+  if (iso.isValid()) return iso.format("DD/MM/YYYY");
+  const dmy = dayjs(str, "DD/MM/YYYY", true);
+  if (dmy.isValid()) return dmy.format("DD/MM/YYYY");
+  return null;
+}
+
+// Chia [fromDate,toDate] thành các đoạn tối đa maxDays ngày (DD/MM/YYYY) —
+// /app/calendar đã xác nhận sống là an toàn với khoảng ~1 tháng.
+function chunkDateRange(fromStr, toStr, maxDays) {
+  const chunks = [];
+  let start = dayjs(fromStr, "DD/MM/YYYY");
+  const end = dayjs(toStr, "DD/MM/YYYY");
+  // Chốt chặn cho chắc (defense in depth) — caller phải chuẩn hoá bằng
+  // normalizeToDMY() trước, đây chỉ là lưới an toàn thứ 2.
+  let safety = 0;
+  while (!start.isAfter(end, "day") && safety++ < 1000) {
+    let chunkEnd = start.add(maxDays - 1, "day");
+    if (chunkEnd.isAfter(end, "day")) chunkEnd = end;
+    chunks.push([start.format("DD/MM/YYYY"), chunkEnd.format("DD/MM/YYYY")]);
+    start = chunkEnd.add(1, "day");
+  }
+  return chunks;
+}
+
 // New endpoint: Revenue report with date range
 app.post(
   "/api/revenue-report",
@@ -1444,7 +1288,7 @@ app.post(
   checkFacilityAccess,
   async (req, res) => {
     try {
-      const { facilityId, fromDate, toDate } = req.body;
+      const { facilityId } = req.body;
 
       if (!facilityId || !facilities[facilityId]) {
         return res.status(400).json({
@@ -1454,10 +1298,12 @@ app.post(
         });
       }
 
+      const fromDate = normalizeToDMY(req.body.fromDate);
+      const toDate = normalizeToDMY(req.body.toDate);
       if (!fromDate || !toDate) {
         return res.status(400).json({
           success: false,
-          error: "fromDate and toDate are required (format: DD/MM/YYYY)",
+          error: "fromDate and toDate are required (format: YYYY-MM-DD or DD/MM/YYYY)",
         });
       }
 
@@ -1466,124 +1312,45 @@ app.post(
         `💰 Generating revenue report for facility: ${facility.name} (${fromDate} - ${toDate})`,
       );
 
-      // Session dùng lại từ cache, chỉ login khi cần
-      let revenueCookies;
-      let revenueRetried = false;
-      {
-        const sess = await otaSession.ensureFacilityCookies(facility, loginAndResolveCookies);
-        if (!sess.ok) return sendOtaSessionError(res, sess, facilityId, facility);
-        revenueCookies = sess.cookies;
-      }
+      // Lấy toàn bộ khoảng [fromDate,toDate] từ /app/calendar (chunk theo
+      // từng ~31 ngày — đã xác nhận sống là khoảng an toàn), rồi lọc còn lại
+      // các booking đến (checkinDate) trong khoảng — tương đương TypeSeachDate=0
+      // cũ, nhưng chỉ 1 request/chunk thay vì roomType × trang.
+      const chunks = chunkDateRange(fromDate, toDate, 31);
+      const bookingGroupByCode = new Map();
+      let latestListRoom = [];
 
-      // Fetch bookings for the date range with TypeSeachDate=0 (check-in/arrival)
-      const searchTypes = [
-        { name: "Phòng đến", typeSeachDate: 0, description: "Check-in" },
-      ];
-
-      let allBookings = [];
-
-      for (const roomType of facility.roomTypes) {
-        for (const searchType of searchTypes) {
-          let currentPage = 1;
-          let totalPages = 1;
-
-          do {
-            const pageParams = {
-              TypeSeachDate: searchType.typeSeachDate,
-              FromDate: fromDate,
-              ToDate: toDate,
-              RoomType: roomType,
-              RoomDetail: "",
-              SourceType: "",
-              Source: "",
-              Status: "1,0,3,4,2",
-              Seach: "",
-              IsExtensionFilder: true,
-              p: currentPage,
-            };
-
-            console.log("pageParams", pageParams);
-
-            const queryString = new URLSearchParams(pageParams).toString();
-            const reportUrl = `${reservationPath}?${queryString}`;
-
-            const reportResponse = await axios.get(reportUrl, {
-              headers: {
-                "User-Agent":
-                  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-                Accept:
-                  "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9,vi;q=0.8",
-                "Cache-Control": "no-cache",
-                Referer: `${baseUrl}/`,
-                Cookie: revenueCookies,
-              },
-              // BUG cũ: maxRedirects: 5 khiến session chết bị axios tự follow
-              // về trang /login, rồi parseBookingData parse trang login và trả
-              // về BÁO CÁO DOANH THU 0 BOOKING với success: true. Trước đây bị
-              // che vì mọi request đều login mới; có session cache thì nó xảy
-              // ra thật. Phải chặn redirect và xử lý tường minh.
-              maxRedirects: 0,
-              validateStatus: (s) => s >= 200 && s < 400,
-            });
-
-            if (isRedirectToLogin(reportResponse)) {
-              if (!revenueRetried) {
-                revenueRetried = true;
-                console.log("🔄 OTA session hết hạn, đăng nhập lại...");
-                otaSession.invalidate(otaSession.accountKey(facility), revenueCookies);
-                const again = await otaSession.ensureFacilityCookies(
-                  facility,
-                  loginAndResolveCookies,
-                );
-                if (!again.ok) return sendOtaSessionError(res, again, facilityId, facility);
-                revenueCookies = again.cookies;
-                continue; // thử lại cùng trang với cookie mới
-              }
-              return res.status(401).json({
-                success: false,
-                code: "OTA_SESSION_REJECTED",
-                error:
-                  "OTA session is not authenticated. Revenue request was redirected to login.",
-                facility: { id: facilityId, name: facility.name },
-              });
-            }
-
-            const parsedData = parseBookingData(reportResponse.data);
-
-            if (parsedData.success) {
-              totalPages = parsedData.totalPages;
-
-              // Add bookings with metadata
-              const bookingsWithMeta = parsedData.bookings.map((booking) => ({
-                ...booking,
-                typeSeachDate: searchType.typeSeachDate,
-                searchType: searchType.name,
-                roomType: roomType,
-              }));
-
-              allBookings = allBookings.concat(bookingsWithMeta);
-
-              console.log(
-                `  📄 Page ${currentPage}/${totalPages}: ${parsedData.bookings.length} bookings`,
-              );
-            }
-
-            currentPage++;
-          } while (currentPage <= totalPages);
+      for (const [chunkFrom, chunkTo] of chunks) {
+        const calResult = await calendarData.fetchCalendarData(
+          facility,
+          loginAndResolveCookies,
+          chunkFrom,
+          chunkTo,
+          { log: console.log },
+        );
+        if (!calResult.ok) {
+          return sendOtaSessionError(res, calResult.sessionError || calResult, facilityId, facility);
         }
+        calResult.bookingGroup.forEach((b) => bookingGroupByCode.set(b.Code, b));
+        latestListRoom = calResult.listRoom;
       }
+
+      const mappedBookings = calendarData.mapBookingGroupToBookings(
+        [...bookingGroupByCode.values()],
+        latestListRoom,
+        { facilityId, facilityName: facility.name },
+      );
+
+      const fromD = dayjs(fromDate, "DD/MM/YYYY");
+      const toD = dayjs(toDate, "DD/MM/YYYY");
+      const allBookings = mappedBookings
+        .filter((b) => {
+          const checkin = dayjs(b.checkinDate, "DD/MM/YYYY");
+          return !checkin.isBefore(fromD, "day") && !checkin.isAfter(toD, "day");
+        })
+        .map((b) => ({ ...b, typeSeachDate: 0, searchType: "Phòng đến" }));
 
       console.log(`✅ Total bookings fetched: ${allBookings.length}`);
-
-      // Sort bookings by check-in date
-      allBookings.sort((a, b) => {
-        const dateA = dayjs(a.checkinDate, "DD/MM/YYYY");
-        const dateB = dayjs(b.checkinDate, "DD/MM/YYYY");
-        return dateA.diff(dateB);
-      });
-
-      console.log(`✅ Bookings sorted by check-in date`);
 
       // Group bookings by OTA source
       const revenueByOTA = {};
@@ -1854,55 +1621,6 @@ function extractExpediaCollectAmount(noteText) {
 
   const match = noteText.match(/Collect Amount:\s*[₫đ]?\s*([\d.,]+)/i);
   return match ? match[1]?.replace(/,/g, ".") : "";
-}
-
-// Helper function to extract CalendarOption data from HTML
-function extractCalendarOptionData(html) {
-  try {
-    const listRoomMatch = html.match(
-      /CalendarOption\.ListRoom\s*=\s*(\[[\s\S]*?\]);/,
-    );
-    const bookingGroupMatch = html.match(
-      /CalendarOption\.BookingGroup\s*=\s*(\[[\s\S]*?\]);/,
-    );
-
-    let listRoom = [];
-    let bookingGroup = [];
-
-    if (listRoomMatch && listRoomMatch[1]) {
-      try {
-        listRoom = JSON.parse(listRoomMatch[1]);
-        console.log("✅ Extracted ListRoom data:", listRoom.length, "rooms");
-      } catch (e) {
-        console.warn("⚠️ Failed to parse ListRoom:", e.message);
-      }
-    }
-
-    if (bookingGroupMatch && bookingGroupMatch[1]) {
-      try {
-        bookingGroup = JSON.parse(bookingGroupMatch[1]);
-        console.log(
-          "✅ Extracted BookingGroup data:",
-          bookingGroup.length,
-          "bookings",
-        );
-      } catch (e) {
-        console.warn("⚠️ Failed to parse BookingGroup:", e.message);
-      }
-    }
-
-    return {
-      success: true,
-      listRoom: listRoom,
-      bookingGroup: bookingGroup,
-    };
-  } catch (error) {
-    console.error("❌ Calendar data extraction error:", error.message);
-    return {
-      success: false,
-      error: error.message,
-    };
-  }
 }
 
 // ===== DLD (DAYLADAU) INTEGRATION ENDPOINTS =====

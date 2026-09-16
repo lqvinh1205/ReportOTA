@@ -71,16 +71,11 @@ if (otaProxyUrl) {
 
 const { getTextPayment } = require("./utils/booking-utils");
 const otaSession = require("./utils/ota-session");
+const calendarData = require("./utils/calendar-data");
 const { sendAdminAlert } = require("./utils/telegram");
 
 const USERS_FILE = path.join(__dirname, "config", "users.json");
 const FACILITIES_FILE = path.join(__dirname, "config", "facilities.json");
-
-const SEARCH_TYPES = [
-  { name: "Phòng đến", typeSeachDate: 0 },
-  { name: "Phòng đi", typeSeachDate: 1 },
-  { name: "Phòng lưu", typeSeachDate: 3 },
-];
 
 const HTTP_HEADERS = {
   "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
@@ -460,63 +455,33 @@ async function fetchPageWithSession(facility, roomType, searchType, page, userna
   return { success: false, error: r.error, code: r.code, ...(r.result || {}) };
 }
 
-// ─── Fetch ALL pages for a facility ──────────────────────────────────────────
+// ─── Fetch ALL bookings (đến hôm nay) cho một facility ────────────────────────
+// 1 lần POST /app/calendar (đủ mọi roomType) thay cho vòng lặp roomType ×
+// trang cũ. Chỉ lấy "phòng đến" (arrival) — giữ đúng phạm vi giám sát hiện
+// tại, không mở rộng sang đi/lưu.
 async function fetchAllBookings(facilityId, facility, username) {
   log(`📥 Lấy toàn bộ booking cho ${facility.name}...`, username);
 
-  const loginResult = await otaSession.ensureFacilityCookies(facility, loginFacility, {
+  const today = formatDate(new Date());
+  const result = await calendarData.fetchCalendarData(facility, loginFacility, today, today, {
     log: (m) => log(m, username),
   });
-  if (!loginResult.ok) {
-    log(`❌ Không lấy được session (${facility.name}) [${loginResult.code}]: ${loginResult.error}`, username);
-    return { success: false, error: loginResult.error, code: loginResult.code };
+  if (!result.ok) {
+    log(`❌ Không lấy được session (${facility.name}) [${result.code}]: ${result.error}`, username);
+    return { success: false, error: result.error, code: result.code };
   }
-  if (loginResult.fromCache) {
+  if (result.fromCache) {
     log(`♻️  Dùng session đã lưu cho ${facility.name}`, username);
   }
 
-  const allBookings = [];
-  const seenKeys = new Set();
-  const pageTracker = {};
+  const mapped = calendarData.mapBookingGroupToBookings(result.bookingGroup, result.listRoom, {
+    facilityId,
+    facilityName: facility.name,
+  });
+  const { arriving } = calendarData.categorizeByDate(mapped, today);
 
-  for (const roomType of facility.roomTypes) {
-    for (const searchType of [SEARCH_TYPES[0]]) {
-      const key = `${facilityId}_${roomType}_${searchType.typeSeachDate}`;
-      let currentPage = 1;
-      let totalPages = 1;
-
-      do {
-        const result = await fetchPageWithSession(facility, roomType, searchType, currentPage, username);
-        if (!result.success) {
-          log(`  ⚠️  ${searchType.name} trang ${currentPage}: ${result.error}`, username);
-          break;
-        }
-        totalPages = result.totalPages;
-
-        for (const b of result.bookings) {
-          const enriched = { ...b, facilityId, facilityName: facility.name, roomType, searchType: searchType.name, typeSeachDate: searchType.typeSeachDate };
-          const k = bookingKey(enriched);
-          if (!seenKeys.has(k)) {
-            seenKeys.add(k);
-            allBookings.push(enriched);
-          }
-        }
-
-        log(`  ✅ ${searchType.name} trang ${currentPage}/${totalPages}: ${result.bookings.length} booking`, username);
-        if (totalPages === 1 || currentPage >= totalPages) break;
-
-        currentPage++;
-        await sleep(200);
-      } while (currentPage <= totalPages && currentPage <= 50);
-
-      pageTracker[key] = totalPages;
-      await sleep(300);
-    }
-    await sleep(500);
-  }
-
-  log(`✅ ${facility.name}: tổng ${allBookings.length} booking`, username);
-  return { success: true, bookings: allBookings, pageTracker };
+  log(`✅ ${facility.name}: tổng ${arriving.length} booking`, username);
+  return { success: true, bookings: arriving, pageTracker: {} };
 }
 
 // ─── Telegram (per-user) ──────────────────────────────────────────────────────
@@ -636,82 +601,49 @@ async function buildUserSnapshot(user) {
 // ─── Monitor: check last page (1 facility) ────────────────────────────────────
 async function checkFacility(facilityId, facility, snapshot, user, loggedKeys) {
   const facilityNewBookings = [];
-  const pageTrackerUpdates = {};
   const seenKeys = new Set(snapshot.bookingKeys);
   const empty = { newBookings: [], pageTrackerUpdates: {} };
 
+  const today = formatDate(new Date());
+  let result;
   try {
-    const sess = await otaSession.ensureFacilityCookies(facility, loginFacility, {
+    result = await calendarData.fetchCalendarData(facility, loginFacility, today, today, {
       log: (m) => log(m, user.username),
     });
-    if (!sess.ok) {
-      // Log một lần cho mỗi TÀI KHOẢN mỗi tick: 6 cơ sở dùng chung một tài
-      // khoản bị khóa thì trước đây in 6 dòng và gửi 6 tin Telegram.
-      if (!loggedKeys || !loggedKeys.has(sess.key)) {
-        if (loggedKeys) loggedKeys.add(sess.key);
-        log(`⚠️  Bỏ qua ${facility.email} [${sess.code}]: ${sess.error}`, user.username);
-      }
-      // Không gửi Telegram ở đây nữa — utils/ota-session đã gửi đúng một lần
-      // khi khóa tài khoản hoặc khi mở circuit breaker.
-      return empty;
-    }
   } catch (e) {
     log(`❌ Exception login ${facility.name}: ${e.message}`, user.username);
     return empty;
   }
 
-  for (const roomType of facility.roomTypes) {
-    for (const searchType of [SEARCH_TYPES[0]]) {
-      const trackerKey = `${facilityId}_${roomType}_${searchType.typeSeachDate}`;
-      const prevTotalPages = snapshot.pageTracker[trackerKey] || 1;
-
-      try {
-        const lastPageResult = await fetchPageWithSession(facility, roomType, searchType, prevTotalPages, user.username);
-        if (!lastPageResult.success) {
-          log(`  ⚠️  [${facility.name}] Lỗi lấy trang ${prevTotalPages} (${searchType.name}): ${lastPageResult.error}`, user.username);
-          continue;
-        }
-
-        const currentTotalPages = lastPageResult.totalPages;
-        const pagesToCheck = new Set([currentTotalPages]);
-
-        if (currentTotalPages > prevTotalPages) {
-          log(`  📈 [${facility.name}] ${searchType.name} tăng trang: ${prevTotalPages} → ${currentTotalPages}`, user.username);
-          pagesToCheck.add(prevTotalPages);
-        }
-
-        for (const page of pagesToCheck) {
-          let result = lastPageResult;
-          if (page !== prevTotalPages) {
-            result = await fetchPageWithSession(facility, roomType, searchType, page, user.username);
-            await sleep(200);
-          }
-          if (!result.success) continue;
-
-          for (const b of result.bookings) {
-            const enriched = { ...b, facilityId, facilityName: facility.name, roomType, searchType: searchType.name, typeSeachDate: searchType.typeSeachDate };
-            const key = bookingKey(enriched);
-            if (!seenKeys.has(key)) {
-              seenKeys.add(key);
-              facilityNewBookings.push(enriched);
-              log(`  🆕 [${facility.name}] ${enriched.guestName} - ${enriched.room} (${enriched.checkinDate}→${enriched.checkoutDate})`, user.username);
-            }
-          }
-        }
-
-        if (currentTotalPages !== prevTotalPages) {
-          pageTrackerUpdates[trackerKey] = currentTotalPages;
-        }
-
-        await sleep(200);
-      } catch (e) {
-        log(`  ❌ Exception ${searchType.name} (${facility.name}): ${e.message}`, user.username);
-      }
+  if (!result.ok) {
+    // Log một lần cho mỗi TÀI KHOẢN mỗi tick: 6 cơ sở dùng chung một tài
+    // khoản bị khóa thì trước đây in 6 dòng và gửi 6 tin Telegram.
+    const accountKey = result.sessionError?.key;
+    if (!loggedKeys || !accountKey || !loggedKeys.has(accountKey)) {
+      if (loggedKeys && accountKey) loggedKeys.add(accountKey);
+      log(`⚠️  Bỏ qua ${facility.email} [${result.code}]: ${result.error}`, user.username);
     }
-    await sleep(300);
+    // Không gửi Telegram ở đây nữa — utils/ota-session đã gửi đúng một lần
+    // khi khóa tài khoản hoặc khi mở circuit breaker.
+    return empty;
   }
 
-  return { newBookings: facilityNewBookings, pageTrackerUpdates };
+  const mapped = calendarData.mapBookingGroupToBookings(result.bookingGroup, result.listRoom, {
+    facilityId,
+    facilityName: facility.name,
+  });
+  const { arriving } = calendarData.categorizeByDate(mapped, today);
+
+  for (const b of arriving) {
+    const key = bookingKey(b);
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key);
+      facilityNewBookings.push(b);
+      log(`  🆕 [${facility.name}] ${b.guestName} - ${b.room} (${b.checkinDate}→${b.checkoutDate})`, user.username);
+    }
+  }
+
+  return { newBookings: facilityNewBookings, pageTrackerUpdates: {} };
 }
 
 // ─── Monitor: check all facilities for one user ───────────────────────────────
