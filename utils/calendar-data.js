@@ -186,10 +186,8 @@ function mapBookingGroupToBookings(bookingGroup, listRoom, ctx = {}) {
     const detail = (b.Details && b.Details[0]) || {};
     const room = roomById.get(detail.RoomId);
 
-    const amount = formatVndAmount(b.Balance);
-    let totalAmount = amount;
-    let paid = amount;
-    let balance = amount;
+    let totalAmount = formatVndAmount((b.Payment || 0) + (b.Balance || 0));
+    let paid = formatVndAmount(b.Balance);
 
     const notes = (b.Notes && b.Notes[0] && b.Notes[0].Note) || "";
     const source = b.ChanelName || "";
@@ -201,7 +199,6 @@ function mapBookingGroupToBookings(bookingGroup, listRoom, ctx = {}) {
       if (collectAmount) {
         totalAmount = collectAmount;
         paid = collectAmount;
-        balance = collectAmount;
       }
     }
 
@@ -220,7 +217,6 @@ function mapBookingGroupToBookings(bookingGroup, listRoom, ctx = {}) {
       checkoutTime: (b.DepartureTime || "").slice(0, 5),
       totalAmount,
       paid,
-      balance,
       notes,
       facilityId: ctx.facilityId,
       facilityName: ctx.facilityName,

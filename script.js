@@ -355,7 +355,6 @@ function displayBookingData(reportData) {
                                 <th>Check-in</th>
                                 <th>Check-out</th>
                                 <th>Total Amount</th>
-                                <th>Balance</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -396,16 +395,6 @@ function displayBookingData(reportData) {
                                     <td class="amount">${
                                       booking.totalAmount
                                     }</td>
-                                    <td class="amount ${
-                                      parseFloat(
-                                        booking.balance?.replace(
-                                          /[^\d.-]/g,
-                                          ""
-                                        ) || 0
-                                      ) > 0
-                                        ? "has-balance"
-                                        : ""
-                                    }">${booking.balance}</td>
                                 </tr>
                             `
                               )
