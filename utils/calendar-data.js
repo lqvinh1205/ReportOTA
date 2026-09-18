@@ -172,6 +172,11 @@ async function getRoomList(facility, loginFn, opts = {}) {
  * totalAmount, paid, balance, notes), sort tăng dần theo checkinDate.
  * Không có bookingDate (ngày đặt) — field này không tồn tại trong BookingGroup
  * và không được dùng ở đâu trong frontend nên bỏ hẳn.
+ *
+ * `id` (= BookingGroup.Id) được giữ thêm để dùng làm khoá dedup phía server:
+ * `bookingCode` (= Code) là mã đặt phòng chung cho cả group, nhiều phòng
+ * trong 1 group (GroupId) share cùng Code nên không dùng để phân biệt từng
+ * phòng được — `id` thì luôn duy nhất theo từng dòng/phòng.
  */
 function mapBookingGroupToBookings(bookingGroup, listRoom, ctx = {}) {
   const roomById = new Map(listRoom.map((r) => [r.Id, r]));
@@ -203,6 +208,7 @@ function mapBookingGroupToBookings(bookingGroup, listRoom, ctx = {}) {
     }
 
     return {
+      id: b.Id,
       bookingCode: b.Code,
       otaReference: b.ChanelId,
       guestName: b.Customer || b.Name || "",

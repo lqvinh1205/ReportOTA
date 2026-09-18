@@ -1025,8 +1025,11 @@ app.post(
       );
 
       // Tính đến/đi/lưu cho từng ngày trong khoảng [fromDate, toDate], dedup
-      // theo (typeSeachDate, bookingCode) vì 1 booking "lưu" có thể khớp
-      // nhiều ngày liên tiếp trong khoảng.
+      // theo (typeSeachDate, id) vì 1 booking "lưu" có thể khớp nhiều ngày
+      // liên tiếp trong khoảng. Dùng `id` (BookingGroup.Id, duy nhất/phòng)
+      // thay vì `bookingCode` (mã chung của cả group) — nhiều phòng trong
+      // cùng 1 group booking share cùng bookingCode, dedup theo bookingCode
+      // làm mất các phòng khác trong group.
       let allBookings = [];
       const seen = new Set();
       let cursor = dayjs(fromDate, "DD/MM/YYYY");
@@ -1038,7 +1041,7 @@ app.post(
         const dateStr = cursor.format("DD/MM/YYYY");
         const { arriving, departing, staying } = calendarData.categorizeByDate(mappedBookings, dateStr);
         for (const b of [...arriving, ...departing, ...staying]) {
-          const key = `${b.typeSeachDate}:${b.bookingCode}`;
+          const key = `${b.typeSeachDate}:${b.id}`;
           if (!seen.has(key)) {
             seen.add(key);
             allBookings.push(b);
@@ -1317,7 +1320,10 @@ app.post(
       // các booking đến (checkinDate) trong khoảng — tương đương TypeSeachDate=0
       // cũ, nhưng chỉ 1 request/chunk thay vì roomType × trang.
       const chunks = chunkDateRange(fromDate, toDate, 31);
-      const bookingGroupByCode = new Map();
+      // Dedup theo `Id` (duy nhất/phòng) qua các chunk chồng lấn — không dùng
+      // `Code` vì nhiều phòng trong cùng 1 group booking share cùng Code, dedup
+      // theo Code sẽ làm mất các phòng khác trong group.
+      const bookingGroupById = new Map();
       let latestListRoom = [];
 
       for (const [chunkFrom, chunkTo] of chunks) {
@@ -1331,12 +1337,12 @@ app.post(
         if (!calResult.ok) {
           return sendOtaSessionError(res, calResult.sessionError || calResult, facilityId, facility);
         }
-        calResult.bookingGroup.forEach((b) => bookingGroupByCode.set(b.Code, b));
+        calResult.bookingGroup.forEach((b) => bookingGroupById.set(b.Id, b));
         latestListRoom = calResult.listRoom;
       }
 
       const mappedBookings = calendarData.mapBookingGroupToBookings(
-        [...bookingGroupByCode.values()],
+        [...bookingGroupById.values()],
         latestListRoom,
         { facilityId, facilityName: facility.name },
       );
