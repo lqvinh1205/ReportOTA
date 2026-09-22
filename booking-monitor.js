@@ -581,27 +581,33 @@ async function buildUserSnapshot(user) {
     bookingKeys: [],
   };
 
-  let errorCount = 0;
+  // Gom lỗi của mọi cơ sở rồi gửi một tin duy nhất sau vòng lặp: 7 cơ sở
+  // cùng lỗi thì trước đây bắn 7 tin Telegram liên tiếp.
+  const failures = [];
+  const facilityCount = Object.keys(facilities).length;
   for (const [facilityId, facility] of Object.entries(facilities)) {
     const result = await fetchAllBookings(facilityId, facility, user.username);
     if (result.success) {
       snapshot.bookings.push(...result.bookings);
       Object.assign(snapshot.pageTracker, result.pageTracker);
     } else {
-      errorCount++;
-      await sendTelegramError(
-        `⚠️ <b>Lỗi tạo snapshot</b> [${user.username}]\nFacility: ${facility.name}\nLỗi: ${result.error}`,
-        user.username
-      );
+      failures.push(`• ${facility.name}: ${result.error}`);
     }
     await sleep(1000);
+  }
+
+  if (failures.length > 0) {
+    await sendTelegramError(
+      `⚠️ <b>Lỗi tạo snapshot</b> [${user.username}] - ${failures.length}/${facilityCount} cơ sở\n${failures.join("\n")}`,
+      user.username
+    );
   }
 
   snapshot.totalBookings = snapshot.bookings.length;
   snapshot.bookingKeys = snapshot.bookings.map(bookingKey);
   saveSnapshot(snapshot, user.username);
 
-  log(`✅ Snapshot ${today} hoàn tất: ${snapshot.totalBookings} booking (${errorCount} lỗi)`, user.username);
+  log(`✅ Snapshot ${today} hoàn tất: ${snapshot.totalBookings} booking (${failures.length} lỗi)`, user.username);
   return true;
 }
 
