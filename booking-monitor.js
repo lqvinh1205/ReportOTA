@@ -72,6 +72,7 @@ if (otaProxyUrl) {
 const { getTextPayment } = require("./utils/booking-utils");
 const otaSession = require("./utils/ota-session");
 const calendarData = require("./utils/calendar-data");
+const roomListCache = require("./utils/room-list-cache");
 const { sendAdminAlert } = require("./utils/telegram");
 
 const USERS_FILE = path.join(__dirname, "config", "users.json");
@@ -474,7 +475,13 @@ async function fetchAllBookings(facilityId, facility, username) {
     log(`♻️  Dùng session đã lưu cho ${facility.name}`, username);
   }
 
-  const mapped = calendarData.mapBookingGroupToBookings(result.bookingGroup, result.listRoom, {
+  // listRoom của POST /app/calendar (result.listRoom) có thể thiếu phòng
+  // (lỗi từ OTA server) — dùng bản đầy đủ đã cache, fallback về
+  // result.listRoom nếu cache-call thất bại.
+  const roomListResult = await roomListCache.getCachedListRoom(facilityId, facility, loginFacility, { log: (m) => log(m, username) });
+  const listRoomForMapping = roomListResult.ok ? roomListResult.listRoom : result.listRoom;
+
+  const mapped = calendarData.mapBookingGroupToBookings(result.bookingGroup, listRoomForMapping, {
     facilityId,
     facilityName: facility.name,
   });
@@ -628,7 +635,13 @@ async function checkFacility(facilityId, facility, snapshot, user, loggedKeys) {
     return empty;
   }
 
-  const mapped = calendarData.mapBookingGroupToBookings(result.bookingGroup, result.listRoom, {
+  // listRoom của POST /app/calendar (result.listRoom) có thể thiếu phòng
+  // (lỗi từ OTA server) — dùng bản đầy đủ đã cache, fallback về
+  // result.listRoom nếu cache-call thất bại.
+  const roomListResult = await roomListCache.getCachedListRoom(facilityId, facility, loginFacility, { log: (m) => log(m, user.username) });
+  const listRoomForMapping = roomListResult.ok ? roomListResult.listRoom : result.listRoom;
+
+  const mapped = calendarData.mapBookingGroupToBookings(result.bookingGroup, listRoomForMapping, {
     facilityId,
     facilityName: facility.name,
   });

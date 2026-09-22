@@ -71,6 +71,7 @@ config/backup/*
 # Cache session OTA (chứa cookie đăng nhập) - tự sinh, xóa được để reset
 config/sessions.json
 config/sessions.json.tmp.*
+config/room-list-cache.json
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache

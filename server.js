@@ -20,6 +20,7 @@ const {
 } = require("./middleware/auth");
 const otaSession = require("./utils/ota-session");
 const calendarData = require("./utils/calendar-data");
+const roomListCache = require("./utils/room-list-cache");
 
 // Load environment variables
 require("dotenv").config();
@@ -1018,9 +1019,15 @@ app.post(
         return sendOtaSessionError(res, calResult.sessionError || calResult, facilityId, facility);
       }
 
+      // listRoom của POST /app/calendar (calResult.listRoom) có thể thiếu
+      // phòng (lỗi từ OTA server) — dùng bản đầy đủ đã cache, fallback về
+      // calResult.listRoom nếu cache-call thất bại.
+      const roomListResult = await roomListCache.getCachedListRoom(facilityId, facility, loginAndResolveCookies, { log: console.log });
+      const listRoomForMapping = roomListResult.ok ? roomListResult.listRoom : calResult.listRoom;
+
       const mappedBookings = calendarData.mapBookingGroupToBookings(
         calResult.bookingGroup,
-        calResult.listRoom,
+        listRoomForMapping,
         { facilityId, facilityName: facility.name },
       );
 
@@ -1094,9 +1101,13 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// Reusable: login + fetch calendar + build room list for a facility
-async function fetchRoomListForFacility(facility) {
-  return calendarData.getRoomList(facility, loginAndResolveCookies);
+// Reusable: login + fetch calendar (cached, xem utils/room-list-cache.js) + build room list for a facility
+async function fetchRoomListForFacility(facilityId, facility, opts = {}) {
+  const result = await roomListCache.getCachedListRoom(facilityId, facility, loginAndResolveCookies, opts);
+  if (!result.ok) {
+    return { success: false, error: result.error, code: result.code, sessionError: result.sessionError };
+  }
+  return { success: true, roomList: calendarData.filterRoomsForFacility(result.listRoom, facility) };
 }
 
 // New API endpoint to get list of rooms for a facility
@@ -1119,7 +1130,7 @@ app.post(
       const facility = facilities[facilityId];
       console.log(`🏠 Getting room list for facility: ${facility.name}`);
 
-      const roomsOutcome = await fetchRoomListForFacility(facility);
+      const roomsOutcome = await fetchRoomListForFacility(facilityId, facility);
       const { success: roomsOk, roomList, error: roomsErr } = roomsOutcome;
       if (!roomsOk) {
         if (roomsOutcome.sessionError) {
@@ -1225,7 +1236,7 @@ app.post("/api/sync-room-counts", authenticateToken, async (req, res) => {
         continue;
       }
 
-      const { success, roomList, error } = await fetchRoomListForFacility(facility);
+      const { success, roomList, error } = await fetchRoomListForFacility(facilityId, facility, { forceRefresh: true });
       if (success) {
         targetUser.facilities_count[idx] = roomList.length;
         results.push({ facilityId, name: facility.name, success: true, roomCount: roomList.length });
@@ -1324,7 +1335,7 @@ app.post(
       // `Code` vì nhiều phòng trong cùng 1 group booking share cùng Code, dedup
       // theo Code sẽ làm mất các phòng khác trong group.
       const bookingGroupById = new Map();
-      let latestListRoom = [];
+      let lastListRoom = [];
 
       for (const [chunkFrom, chunkTo] of chunks) {
         const calResult = await calendarData.fetchCalendarData(
@@ -1338,12 +1349,18 @@ app.post(
           return sendOtaSessionError(res, calResult.sessionError || calResult, facilityId, facility);
         }
         calResult.bookingGroup.forEach((b) => bookingGroupById.set(b.Id, b));
-        latestListRoom = calResult.listRoom;
+        lastListRoom = calResult.listRoom;
       }
+
+      // listRoom của POST /app/calendar (lastListRoom) có thể thiếu phòng
+      // (lỗi từ OTA server) — dùng bản đầy đủ đã cache, fallback về
+      // lastListRoom nếu cache-call thất bại.
+      const roomListResult = await roomListCache.getCachedListRoom(facilityId, facility, loginAndResolveCookies, { log: console.log });
+      const listRoomForMapping = roomListResult.ok ? roomListResult.listRoom : lastListRoom;
 
       const mappedBookings = calendarData.mapBookingGroupToBookings(
         [...bookingGroupById.values()],
-        latestListRoom,
+        listRoomForMapping,
         { facilityId, facilityName: facility.name },
       );
 
