@@ -115,7 +115,11 @@ async function fetchCalendarData(facility, loginFn, beginShowDate, endShowDate, 
   body.append("BeginShowDate", beginShowDate);
   body.append("EndShowDate", endShowDate);
   roomTypeIds.forEach((id) => body.append("RoomTypeIds", id));
-  body.append("Floors", opts.floors || "");
+  // `Floors` nhận TÊN khu/tầng (chuỗi), và "" KHÔNG có nghĩa "không lọc" — nó
+  // là một khu thật ("Không xác định"). Luôn gửi Floors="" nên mọi phòng thuộc khu
+  // có tên bị loại: era_apartment_19 (khu "Era - Giảng Võ") trả về 0 booking dù
+  // /app/Reservation vẫn thấy đủ. Bỏ hẳn tham số khi không lọc theo khu/tầng.
+  if (opts.floors) body.append("Floors", opts.floors);
 
   const outcome = await otaSession.withSession(
     facility,
