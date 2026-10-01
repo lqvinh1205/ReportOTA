@@ -215,7 +215,7 @@ function mapBookingGroupToBookings(bookingGroup, listRoom, ctx = {}) {
       id: b.Id,
       bookingCode: b.Code,
       otaReference: b.ChanelId,
-      guestName: b.Customer || b.Name || "",
+      guestName: b.Name || b.Customer || "",
       property: ctx.facilityName || "",
       room: room ? room.Name : "",
       roomType: detail.TypeRoomId,
