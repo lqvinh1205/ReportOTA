@@ -536,7 +536,7 @@ async function sendTelegramError(message, username) {
   return sendAdminAlert(message, (m) => log(m, username));
 }
 
-function formatBookingMessage(b) {
+function formatBookingMessage(b, username) {
   const room = extractRoomNumber(b.room);
   const checkinDate = dayjs(b.checkinDate, "DD/MM/YYYY");
   const checkoutDate = dayjs(b.checkoutDate, "DD/MM/YYYY");
@@ -551,7 +551,9 @@ function formatBookingMessage(b) {
     : "";
   const totalAmount = b.totalAmount || "0";
 
-  return `P${room} - ${guestName} ${code} - ${nights} đêm - ${paymentText} ${totalAmount}`;
+  const mobile = username === "baoyen" && b.mobile ? ` - SĐT: ${b.mobile}` : "";
+
+  return `P${room} - ${guestName} ${code} - ${nights} đêm - ${paymentText} ${totalAmount}${mobile}`;
 }
 
 // ─── Snapshot builder (per-user) ─────────────────────────────────────────────
@@ -731,7 +733,7 @@ async function notifyNewBookings(user, newBookings) {
   const facilityEntries = Object.entries(byFacility);
   for (let i = 0; i < facilityEntries.length; i++) {
     const [facilityName, bookings] = facilityEntries[i];
-    const lines = bookings.map(formatBookingMessage).join("\n");
+    const lines = bookings.map((b) => formatBookingMessage(b, user.username)).join("\n");
     const msg = `🔔 <b>Booking mới - ${facilityName}</b>\n\n${lines}`;
     await sendTelegram(msg, user.telegram_bot_token, user.telegram_chat_id, user.username);
     // Delay nhỏ giữa các lần gửi để tránh dồn dập vào cùng 1 chat_id gây 429 (Telegram rate-limit).
