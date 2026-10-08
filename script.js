@@ -44,7 +44,8 @@ async function verifyAuth() {
   try {
     const response = await fetch(`${API_BASE_URL}/api/auth/verify`, {
       headers: {
-        'Authorization': `Bearer ${token}`
+        'Authorization': `Bearer ${token}`,
+        'ngrok-skip-browser-warning': 'true'
       }
     });
 
@@ -81,7 +82,8 @@ async function fetchWithAuth(url, options = {}) {
     headers: {
       ...options.headers,
       'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      'ngrok-skip-browser-warning': 'true'
     }
   };
 
@@ -170,7 +172,9 @@ async function fetchReportViaServer() {
 // Check server health
 async function checkServerHealth() {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/health`);
+    const response = await fetch(`${API_BASE_URL}/api/health`, {
+      headers: { "ngrok-skip-browser-warning": "true" },
+    });
     const health = await response.json();
 
     console.log("🏥 Server health:", health);
@@ -199,6 +203,7 @@ async function loginViaServer() {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        "ngrok-skip-browser-warning": "true",
       },
     });
 
@@ -767,44 +772,84 @@ function generateReportText(bookings, allRoomNumbers = null) {
     console.log("⚠️ No room list provided, skipping vacant room calculation");
   }
 
-  // Build report text
-  let reportText = `${facilityName}\nBáo cáo ngày: ${currentDate}\n\n`;
-
-  reportText += `TỔNG QUAN:\n`;
-
-  if (departed.length > 0) {
-    reportText += `- Phòng đi: ${departed.join(", ")}\n`;
-  } else {
-    reportText += `- Phòng đi: Không có\n`;
-  }
-
-  if (staying.length > 0) {
-    reportText += `- Phòng lưu: ${staying.join(", ")}\n`;
-  } else {
-    reportText += `- Phòng lưu: Không có\n`;
-  }
-
-  if (vacant.length > 0) {
-    reportText += `- Phòng trống: ${vacant.join(", ")}\n`;
-  } else if (allRoomNumbers) {
-    // Only show "Không có" if we actually checked for vacant rooms
-    reportText += `- Phòng trống: Không có\n`;
-  } else {
-    // If no room list was provided, indicate that vacant rooms weren't calculated
-    reportText += `- Phòng trống: Chưa tính toán (thiếu danh sách phòng)\n`;
-  }
-
-  if (arriving.length > 0) {
-    reportText += `- Phòng đến:\n`;
-    arriving.forEach((room) => {
-      reportText += `${room}\n\n`;
-    });
-  } else {
-    reportText += `- Phòng đến: Không có\n`;
-  }
-
-  return reportText;
+  // Build report text using the template assigned to current user (default if none)
+  const templateName = getCurrentUser()?.reportTemplate;
+  const template = REPORT_TEMPLATES[templateName] || REPORT_TEMPLATES.default;
+  return template({
+    facilityName,
+    currentDate,
+    departed,
+    staying,
+    arriving,
+    vacant,
+    allRoomNumbers,
+  });
 }
+
+// Report templates, selected per user via `reportTemplate` in config/users.json
+const REPORT_TEMPLATES = {
+  default({ facilityName, currentDate, departed, staying, arriving, vacant, allRoomNumbers }) {
+    let reportText = `${facilityName}\nBáo cáo ngày: ${currentDate}\n\n`;
+
+    reportText += `TỔNG QUAN:\n`;
+
+    if (departed.length > 0) {
+      reportText += `- Phòng đi: ${departed.join(", ")}\n`;
+    } else {
+      reportText += `- Phòng đi: Không có\n`;
+    }
+
+    if (staying.length > 0) {
+      reportText += `- Phòng lưu: ${staying.join(", ")}\n`;
+    } else {
+      reportText += `- Phòng lưu: Không có\n`;
+    }
+
+    if (vacant.length > 0) {
+      reportText += `- Phòng trống: ${vacant.join(", ")}\n`;
+    } else if (allRoomNumbers) {
+      // Only show "Không có" if we actually checked for vacant rooms
+      reportText += `- Phòng trống: Không có\n`;
+    } else {
+      // If no room list was provided, indicate that vacant rooms weren't calculated
+      reportText += `- Phòng trống: Chưa tính toán (thiếu danh sách phòng)\n`;
+    }
+
+    if (arriving.length > 0) {
+      reportText += `- Phòng đến:\n`;
+      arriving.forEach((room) => {
+        reportText += `${room}\n\n`;
+      });
+    } else {
+      reportText += `- Phòng đến: Không có\n`;
+    }
+
+    return reportText;
+  },
+
+  // Departed rooms grouped by last 2 digits, e.g. "04: 304, 404, 204"
+  departed_by_suffix({ currentDate, departed }) {
+    let reportText = `Ngày ${currentDate} – Phòng đi\n\n`;
+
+    if (departed.length === 0) {
+      return reportText + "Không có\n";
+    }
+
+    const groups = {};
+    departed.forEach((room) => {
+      const key = /^\d{2,}$/.test(room) ? room.slice(-2) : room;
+      (groups[key] = groups[key] || []).push(room);
+    });
+
+    Object.keys(groups)
+      .sort()
+      .forEach((key) => {
+        reportText += `${key}: ${groups[key].join(", ")}\n`;
+      });
+
+    return reportText;
+  },
+};
 
 // Extract pure room number from various formats:
 // "1N1K - 450"    → "450"

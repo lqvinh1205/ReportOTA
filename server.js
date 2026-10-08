@@ -643,6 +643,7 @@ app.post("/api/auth/login", async (req, res) => {
         name: user.name,
         email: user.email,
         role: user.role,
+        reportTemplate: user.reportTemplate,
         facilities: userFacilities,
       },
     });

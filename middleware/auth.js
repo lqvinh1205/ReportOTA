@@ -97,6 +97,7 @@ function generateToken(user) {
     email: user.email,
     role: user.role,
     facilities: user.facilities,
+    reportTemplate: user.reportTemplate,
   };
 
   return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
