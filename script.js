@@ -108,6 +108,9 @@ async function fetchReportViaServer() {
     return;
   }
 
+  const reportDate =
+    document.getElementById("reportDate").value || dayjs().format("YYYY-MM-DD");
+
   showLoading("Đang lấy dữ liệu booking...");
   updateApiStatus("pending", "Đang gọi server...");
 
@@ -120,8 +123,8 @@ async function fetchReportViaServer() {
         method: "POST",
         body: JSON.stringify({
           facilityId: facilityId,
-          fromDate: dayjs().format("YYYY-MM-DD"),
-          toDate: dayjs().format("YYYY-MM-DD"),
+          fromDate: reportDate,
+          toDate: reportDate,
         }),
       }
     );
@@ -143,6 +146,7 @@ async function fetchReportViaServer() {
           timestamp: result.timestamp,
           fetchSummary: result.summary,
           facility: result.facility,
+          reportDate: reportDate,
         };
 
         updateLoading("Đang tạo báo cáo...");
@@ -675,7 +679,10 @@ async function generateReportWithRoomList(bookings, facilityId) {
 
 // Updated generateReportText function to accept room list parameter
 function generateReportText(bookings, allRoomNumbers = null) {
-  const currentDate = new Date().toLocaleDateString("vi-VN");
+  // Use the date the data was fetched for (falls back to today)
+  const currentDate = dayjs(window.lastBookingData?.reportDate)
+    .toDate()
+    .toLocaleDateString("vi-VN");
 
   // Get facility name from the last booking data or fallback to default
   let facilityName = "Era Apartment - 58 Nguyễn Khánh Toàn"; // Default fallback
@@ -1071,6 +1078,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   
   document.getElementById("fromDate").valueAsDate = today;
   document.getElementById("toDate").valueAsDate = today;
+  document.getElementById("reportDate").value = dayjs().format("YYYY-MM-DD");
 });
 
 // Load cached room counts and update header badge

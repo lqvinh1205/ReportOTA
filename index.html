@@ -52,6 +52,12 @@
                                         <option value="">Đang tải danh sách cơ sở...</option>
                                     </select>
                                 </div>
+                                <div class="date-section">
+                                    <div class="date-input-wrapper">
+                                        <label for="reportDate"><span class="required-star">*</span> Ngày báo cáo:</label>
+                                        <input type="date" id="reportDate" class="date-input">
+                                    </div>
+                                </div>
                                 <button class="api-btn daily-report-btn" onclick="fetchReportViaServer()">
                                     📋 Báo cáo hàng ngày
                                 </button>
@@ -106,7 +112,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.13/dayjs.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.13/plugin/customParseFormat.js"></script>
-    <script src="script.js?v=1.0.11"></script>
+    <script src="script.js?v=1.0.12"></script>
     <script>
         // Check authentication on page load
         window.addEventListener('DOMContentLoaded', async () => {
