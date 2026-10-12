@@ -60,18 +60,24 @@ function formatVndAmount(n) {
   return num.toLocaleString("vi-VN");
 }
 
+// Ghi chú khách có thể chứa "];" (vd "... [Like];") nên regex `\[[\s\S]*?\];`
+// cắt JSON giữa chuỗi → parse lỗi → era_apartment_9 trả 0 booking. Mảng được
+// pretty-print, `];` đóng luôn nằm đầu dòng, mà chuỗi JSON không thể chứa
+// newline thật → bắt buộc có `\n` trước `];` (hoặc mảng rỗng `[]`).
+function extractJsonArray(html, name) {
+  const m = html.match(new RegExp(`CalendarOption\\.${name}\\s*=\\s*(\\[\\s*\\]|\\[[\\s\\S]*?\\n\\s*\\]);`));
+  if (!m) return [];
+  try { return JSON.parse(m[1]); } catch (e) {
+    console.warn(`⚠️ Không parse được CalendarOption.${name}: ${e.message}`);
+    return [];
+  }
+}
+
 function extractCalendarOptionData(html) {
-  const listRoomMatch = html.match(/CalendarOption\.ListRoom\s*=\s*(\[[\s\S]*?\]);/);
-  const bookingGroupMatch = html.match(/CalendarOption\.BookingGroup\s*=\s*(\[[\s\S]*?\]);/);
-  let listRoom = [];
-  let bookingGroup = [];
-  if (listRoomMatch) {
-    try { listRoom = JSON.parse(listRoomMatch[1]); } catch (e) { /* HTML không đúng dạng mong đợi, trả mảng rỗng */ }
-  }
-  if (bookingGroupMatch) {
-    try { bookingGroup = JSON.parse(bookingGroupMatch[1]); } catch (e) { /* như trên */ }
-  }
-  return { listRoom, bookingGroup };
+  return {
+    listRoom: extractJsonArray(html, "ListRoom"),
+    bookingGroup: extractJsonArray(html, "BookingGroup"),
+  };
 }
 
 /**
