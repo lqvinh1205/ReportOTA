@@ -147,6 +147,7 @@ async function fetchReportViaServer() {
           fetchSummary: result.summary,
           facility: result.facility,
           reportDate: reportDate,
+          endingBlocks: result.endingBlocks || [],
         };
 
         updateLoading("Đang tạo báo cáo...");
@@ -779,6 +780,14 @@ function generateReportText(bookings, allRoomNumbers = null) {
     console.log("⚠️ No room list provided, skipping vacant room calculation");
   }
 
+  // Rooms whose block (CalendarOption.BlockOuts) ends on the report date but
+  // that are not already listed as departed — blocks are not bookings, so the
+  // room is never counted as "Phòng đi" even when a guest just left it.
+  const departedSet = new Set(departed.map(String));
+  const blocksToReview = (window.lastBookingData?.endingBlocks || [])
+    .map((b) => ({ ...b, roomNumber: convertBookingRoomName(b.room) }))
+    .filter((b) => b.roomNumber && !departedSet.has(String(b.roomNumber)));
+
   // Build report text using the template assigned to current user (default if none)
   const templateName = getCurrentUser()?.reportTemplate;
   const template = REPORT_TEMPLATES[templateName] || REPORT_TEMPLATES.default;
@@ -790,7 +799,15 @@ function generateReportText(bookings, allRoomNumbers = null) {
     arriving,
     vacant,
     allRoomNumbers,
+    blocksToReview,
   });
+}
+
+// Footer note asking staff to double-check rooms that ended a block today
+function buildBlockReviewNote(blocksToReview) {
+  if (!blocksToReview || blocksToReview.length === 0) return "";
+  const rooms = [...new Set(blocksToReview.map((b) => b.roomNumber))].sort();
+  return `\n⚠️ Rà soát lại: ${rooms.join(", ")} — phòng hết block hôm nay, chưa có trong danh sách phòng đi\n`;
 }
 
 // Report templates, selected per user via `reportTemplate` in config/users.json
@@ -835,11 +852,11 @@ const REPORT_TEMPLATES = {
   },
 
   // Departed rooms grouped by last 2 digits, e.g. "04: 304, 404, 204"
-  departed_by_suffix({ currentDate, departed }) {
+  departed_by_suffix({ currentDate, departed, blocksToReview }) {
     let reportText = `Ngày ${currentDate} – Phòng đi\n\n`;
 
     if (departed.length === 0) {
-      return reportText + "Không có\n";
+      return reportText + "Không có\n" + buildBlockReviewNote(blocksToReview);
     }
 
     const groups = {};
@@ -854,7 +871,7 @@ const REPORT_TEMPLATES = {
         reportText += `${key}: ${groups[key].join(", ")}\n`;
       });
 
-    return reportText;
+    return reportText + buildBlockReviewNote(blocksToReview);
   },
 };
 

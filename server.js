@@ -1051,8 +1051,18 @@ app.post(
         cursor = cursor.add(1, "day");
       }
 
+      // Block kết thúc trong khoảng [fromDate, toDate] — client dùng để cảnh
+      // báo các phòng có thể là "phòng đi" nhưng không có booking tương ứng.
+      const rangeStart = dayjs(fromDate, "DD/MM/YYYY");
+      const endingBlocks = calendarData
+        .mapBlockOuts(calResult.blockOuts || [], calResult.listRoom)
+        .filter((b) => {
+          const d = dayjs(b.checkoutDate, "DD/MM/YYYY");
+          return d.isValid() && !d.isBefore(rangeStart, "day") && !d.isAfter(end, "day");
+        });
+
       console.log(`\n🎊 FACILITY FETCH COMPLETED FOR ${facility.name}!`);
-      console.log(`📊 Total bookings: ${allBookings.length}`);
+      console.log(`📊 Total bookings: ${allBookings.length}, ending blocks: ${endingBlocks.length}`);
 
       res.json({
         success: true,
@@ -1068,6 +1078,7 @@ app.post(
         },
         totalBookings: allBookings.length,
         bookings: allBookings,
+        endingBlocks,
         timestamp: new Date().toISOString(),
       });
     } catch (error) {

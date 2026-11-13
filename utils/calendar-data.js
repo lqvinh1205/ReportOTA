@@ -63,15 +63,42 @@ function formatVndAmount(n) {
 function extractCalendarOptionData(html) {
   const listRoomMatch = html.match(/CalendarOption\.ListRoom\s*=\s*(\[[\s\S]*?\]);/);
   const bookingGroupMatch = html.match(/CalendarOption\.BookingGroup\s*=\s*(\[[\s\S]*?\]);/);
+  const blockOutsMatch = html.match(/CalendarOption\.BlockOuts\s*=\s*(\[[\s\S]*?\]);/);
   let listRoom = [];
   let bookingGroup = [];
+  let blockOuts = [];
   if (listRoomMatch) {
     try { listRoom = JSON.parse(listRoomMatch[1]); } catch (e) { /* HTML không đúng dạng mong đợi, trả mảng rỗng */ }
   }
   if (bookingGroupMatch) {
     try { bookingGroup = JSON.parse(bookingGroupMatch[1]); } catch (e) { /* như trên */ }
   }
-  return { listRoom, bookingGroup };
+  if (blockOutsMatch) {
+    try { blockOuts = JSON.parse(blockOutsMatch[1]); } catch (e) { /* như trên */ }
+  }
+  return { listRoom, bookingGroup, blockOuts };
+}
+
+/**
+ * Block phòng (CalendarOption.BlockOuts) KHÔNG nằm trong BookingGroup nên không
+ * bao giờ được tính vào đến/đi/lưu. Thực tế lễ tân hay dùng block để ghi khách
+ * ngoài hệ thống (Name là tên khách, vd "ngọc", "Jenni"), nên block kết thúc
+ * ngày D nghĩa là phòng có thể vừa trả khách — cần rà soát thủ công.
+ * Xác nhận sống: RoomDetailId khớp ListRoom.Id; BeginDate/EndDate dạng ISO.
+ */
+function mapBlockOuts(blockOuts, listRoom) {
+  const roomById = new Map(listRoom.map((r) => [r.Id, r]));
+  return blockOuts.map((b) => {
+    const room = roomById.get(b.RoomDetailId);
+    return {
+      id: b.Id,
+      name: b.Name || "",
+      room: room ? room.Name : "",
+      checkinDate: b.BeginDate ? dayjs(b.BeginDate).format("DD/MM/YYYY") : "",
+      checkoutDate: b.EndDate ? dayjs(b.EndDate).format("DD/MM/YYYY") : "",
+      note: b.Note || "",
+    };
+  });
 }
 
 /**
@@ -272,5 +299,6 @@ module.exports = {
   filterRoomsForFacility,
   getRoomList,
   mapBookingGroupToBookings,
+  mapBlockOuts,
   categorizeByDate,
 };
