@@ -1681,14 +1681,23 @@ function showRevenueExportPopup(reportData) {
   let excelText = ``;
 
   dayjs.extend(dayjs_plugin_customParseFormat);
-  
+
+  // Cột SĐT + Tên cơ sở chỉ thêm cho user baoyen
+  const includeContactColumns = getCurrentUser()?.username === "baoyen";
+
   bookings.forEach((booking) => {
     const checkinDate = dayjs(booking.checkinDate, "DD/MM/YYYY");
     const checkoutDate = dayjs(booking.checkoutDate, "DD/MM/YYYY");
     const nights = Math.max(1, checkoutDate.diff(checkinDate, "day"));
 
-    // Format: Ngày(empty) phòng TênKhách NgàyĐến NgàyĐi TổngSốĐêm Đơngiá TổngTiền HH(empty) ThựcThu NGUỒN
-    excelText += `\t${booking.room}\t${booking.guestName}\t${booking.checkinDate}\t${booking.checkoutDate}\t${nights}\t\t${booking.totalAmount}\t\t${booking.totalAmount}\t${getOTASourceName(booking.source)}\n`;
+    // Format: Ngày(empty) phòng TênKhách NgàyĐến NgàyĐi TổngSốĐêm Đơngiá TổngTiền HH(empty) ThựcThu NGUỒN [SĐT TênCơSở — chỉ user baoyen]
+    let row = `\t${booking.room}\t${booking.guestName}\t${booking.checkinDate}\t${booking.checkoutDate}\t${nights}\t\t${booking.totalAmount}\t\t${booking.totalAmount}\t${getOTASourceName(booking.source)}`;
+    if (includeContactColumns) {
+      // Tab/xuống dòng trong dữ liệu sẽ làm lệch cột khi paste Excel
+      const cell = (v) => String(v || "").replace(/[\t\r\n]+/g, " ");
+      row += `\t${cell(booking.mobile)}\t${cell(booking.facilityName || facility.name)}`;
+    }
+    excelText += row + "\n";
   });
 
   // Remove existing popup

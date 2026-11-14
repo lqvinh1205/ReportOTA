@@ -60,6 +60,19 @@ function formatVndAmount(n) {
   return num.toLocaleString("vi-VN");
 }
 
+// Details[].Mobile (field SĐT duy nhất trong BookingGroup — xác nhận sống) với
+// khách quốc tế (Booking.com/Agoda) bị bọc ký tự điều hướng Unicode ẩn
+// (U+202A…U+202E, U+2066…U+2069, U+200E/F) và dùng gạch nối không ngắt U+2011,
+// vd "‪+7 987 237‑97‑49‬" — dính vào ô khi paste Excel. Làm sạch, giữ nguyên định dạng.
+function cleanPhone(raw) {
+  if (!raw) return "";
+  return String(raw)
+    .replace(/[​-‏‪-‮⁦-⁩﻿]/g, "")
+    .replace(/[‐-―]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 // Ghi chú khách có thể chứa "];" (vd "... [Like];") nên regex `\[[\s\S]*?\];`
 // cắt JSON giữa chuỗi → parse lỗi → era_apartment_9 trả 0 booking. Mảng được
 // pretty-print, `];` đóng luôn nằm đầu dòng, mà chuỗi JSON không thể chứa
@@ -245,7 +258,7 @@ function mapBookingGroupToBookings(bookingGroup, listRoom, ctx = {}) {
       bookingCode: b.Code,
       otaReference: b.ChanelId,
       guestName: b.Name || b.Customer || "",
-      mobile: detail.Mobile || "",
+      mobile: cleanPhone(detail.Mobile),
       property: ctx.facilityName || "",
       room: room ? room.Name : "",
       roomType: detail.TypeRoomId,
